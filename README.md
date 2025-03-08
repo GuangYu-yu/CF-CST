@@ -50,7 +50,7 @@
 
 ```bash
 # 测试指定地区的节点，限制延迟在 500ms 以内
-./cfspeed -url "https://example.com/cidr.txt" -colo "HKG,KHH" -tl 500
+./cfspeed -url "https://example.com/cidr.txt" -colo "HKG,NRT,LAX,SJC,IAD,CDG,SEA" -tl 500
 
 # 生成 IPv4 列表而不进行测速
 ./cfspeed -url "https://example.com/cidr.txt" -notest -useip4 all
