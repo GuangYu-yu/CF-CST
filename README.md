@@ -1,16 +1,6 @@
-# CloudFlare IP 测速工具
+# CloudFlare CIDR 测速工具
 
-这是一个用于测试和筛选 CloudFlare CDN 节点 IP 的工具
-
-## 功能特点
-
-- 支持从 URL 或本地文件获取 CIDR 列表
-- 支持 IPv4 和 IPv6 地址测速
-- 提供多线程并发测试，提高测速效率
-- 可自定义测试参数（延迟阈值、并发数、端口等）
-- 支持指定地区节点筛选（如 HKG, KHH, NRT, LAX 等）
-- 输出结果支持 CSV 格式，方便数据分析
-- 支持生成随机 IP 列表功能
+这是一个用于测试和筛选 CloudFlare CIDR 的工具
 
 ## 使用方法
 
@@ -50,7 +40,7 @@
 
 ```
 # 从 URL 获取 CIDR 列表并测速
-./cfspeed -url "https://example.com/cidr-list"
+./cfspeed -url "https://example.com/cidr.txt"
 
 # 从本地文件获取 CIDR 列表
 ./cfspeed -f cidr.txt
@@ -60,10 +50,10 @@
 
 ```bash
 # 测试指定地区的节点，限制延迟在 500ms 以内
-./cfspeed -url "https://example.com/cidr-list" -colo "HKG,KHH" -tl 500
+./cfspeed -url "https://example.com/cidr.txt" -colo "HKG,KHH" -tl 500
 
 # 生成 IPv4 列表而不进行测速
-./cfspeed -url "https://example.com/cidr-list" -notest -useip4 all
+./cfspeed -url "https://example.com/cidr.txt" -notest -useip4 all
 ```
 
 ## 数据文件说明
