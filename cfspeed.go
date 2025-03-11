@@ -635,9 +635,6 @@ func generateRandomIPs(cidrList []string, ipPerCIDR int) []CIDRGroup {
 	return cidrGroups
 }
 
-// 全局变量，用于存储IP到CIDR的映射
-var ipCIDRMap map[string]string
-
 // 生成随机IPv4地址
 func generateRandomIPv4(ipNet *net.IPNet) string {
 	// 调用通用的IPv4地址生成函数
@@ -1024,73 +1021,6 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 	}
 
 	return cidrGroups
-}
-
-// 聚合CIDR结果，计算每个CIDR的平均性能
-func aggregateCIDRResults(results []TestResult) []TestResult {
-	// 创建CIDR到IP结果的映射
-	cidrMap := make(map[string][]TestResult)
-
-	// 按CIDR分组
-	for _, result := range results {
-		cidrMap[result.CIDR] = append(cidrMap[result.CIDR], result)
-	}
-
-	// 创建聚合结果
-	var aggregatedResults []TestResult
-
-	// 计算每个CIDR的平均性能
-	for cidr, ipResults := range cidrMap {
-		// 如果只有一个IP，直接使用其结果
-		if len(ipResults) == 1 {
-			aggregatedResults = append(aggregatedResults, ipResults[0])
-			continue
-		}
-
-		// 计算平均延迟和丢包率
-		var totalLatency int
-		var totalLossRate float64
-		var dataCenter, region, city string
-
-		for _, result := range ipResults {
-			totalLatency += result.AvgLatency
-			totalLossRate += result.LossRate
-
-			// 使用第一个有效的数据中心信息
-			if dataCenter == "" && result.DataCenter != "Unknown" {
-				dataCenter = result.DataCenter
-				region = result.Region
-				city = result.City
-			}
-		}
-
-		avgLatency := totalLatency / len(ipResults)
-		avgLossRate := totalLossRate / float64(len(ipResults))
-
-		// 创建聚合结果
-		aggregatedResults = append(aggregatedResults, TestResult{
-			IP:         ipResults[0].IP, // 使用第一个IP作为代表
-			CIDR:       cidr,
-			DataCenter: dataCenter,
-			Region:     region,
-			City:       city,
-			AvgLatency: avgLatency,
-			LossRate:   avgLossRate,
-		})
-	}
-
-	return aggregatedResults
-}
-
-// 从IP获取CIDR
-func getCIDRFromIP(ip string) string {
-	// 如果在映射中找到对应的CIDR，则返回
-	if cidr, ok := ipCIDRMap[ip]; ok {
-		return cidr
-	}
-
-	// 如果没有找到映射，直接返回原始IP
-	return ip
 }
 
 // 获取数据中心信息
@@ -1559,7 +1489,7 @@ func printResultsSummary(results []TestResult) {
 		dcMap[dc] = stats
 	}
 
-	fmt.Println("\n")
+	fmt.Println()
 
 	// 创建数据中心统计表格
 	table := tablewriter.NewWriter(os.Stdout)
@@ -1593,7 +1523,7 @@ func printResultsSummary(results []TestResult) {
 		}
 	}
 
-	fmt.Println("\n")
+	fmt.Println()
 
 	// 显示最佳结果表格
 	resultTable := tablewriter.NewWriter(os.Stdout)
@@ -1618,5 +1548,5 @@ func printResultsSummary(results []TestResult) {
 	}
 	resultTable.Render()
 
-	fmt.Println("\n")
+	fmt.Println()
 }
