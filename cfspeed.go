@@ -860,6 +860,24 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 	var count int32
 	var failCount int32
 
+	// 添加速率限制相关变量
+	var requestCounter int32
+	requestLimit := int32(100)                           // 每100个请求后暂停
+	rateLimiter := time.NewTicker(time.Millisecond * 40) // 每40毫秒允许一个请求
+	defer rateLimiter.Stop()
+
+	// 添加暂停控制通道
+	go func() {
+		for {
+			if atomic.LoadInt32(&requestCounter) >= requestLimit {
+				// 达到请求限制，暂停一段时间
+				time.Sleep(time.Second * 2)           // 暂停2秒
+				atomic.StoreInt32(&requestCounter, 0) // 重置计数器
+			}
+			time.Sleep(time.Millisecond * 100) // 每100毫秒检查一次
+		}
+	}()
+
 	// 添加CIDR到数据中心信息的缓存映射
 	type coloInfo struct {
 		dataCenter string
@@ -873,7 +891,12 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 	for i := 0; i < maxThreads; i++ {
 		go func() {
 			for task := range tasks {
-				// cfdata 风格的 TCP 测试
+				// 等待速率限制器的信号
+				<-rateLimiter.C
+
+				// 增加请求计数
+				atomic.AddInt32(&requestCounter, 1)
+
 				dialer := &net.Dialer{
 					Timeout: 1 * time.Second, // 使用1秒超时
 				}
@@ -885,6 +908,11 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 
 				// 进行多次测试
 				for i := 0; i < testCount; i++ {
+					// 每次测试前添加小延迟，避免请求过于集中
+					if i > 0 {
+						time.Sleep(time.Duration(15+rand.Intn(30)) * time.Millisecond)
+					}
+
 					start := time.Now()
 					conn, err := dialer.Dial("tcp", net.JoinHostPort(task.ip, strconv.Itoa(port)))
 
@@ -1030,6 +1058,9 @@ func getDataCenterInfo(ip string, locationMap map[string]location) (string, stri
 
 	// 重试间隔
 	retryDelay := 200 * time.Millisecond
+
+	// 添加静态速率限制，避免对同一服务器发送过多请求
+	time.Sleep(time.Duration(100+rand.Intn(100)) * time.Millisecond)
 
 	for retry := 0; retry <= maxRetries; retry++ {
 		// 重试延迟，但第一次尝试不需要等待
