@@ -108,7 +108,7 @@ func runMainProgram() {
 	useIPv6 := flag.String("useip6", "", "输出IPv6列表，使用 all 表示输出所有IPv6")
 	ipTxtFile := flag.String("iptxt", "ip.txt", "指定IP列表输出文件名")
 	noTest := flag.Bool("notest", false, "不进行测速，只生成随机IP")
-	showAll := flag.Bool("showall", false, "显示所有结果，包括未查询到数据中心的结果")
+	showAll := flag.Bool("showall", false, "使用后显示所有结果，包括未查询到数据中心的结果")
 	help := flag.Bool("h", false, "打印帮助")
 
 	flag.Parse()
@@ -227,8 +227,11 @@ func runMainProgram() {
 			totalLossRate += result.LossRate
 
 			// 使用第一个有效的数据中心信息
-			if dataCenter == "" && result.DataCenter != "Unknown" {
+			if dataCenter == "" {
 				dataCenter = result.DataCenter
+				if dataCenter == "" {
+					dataCenter = "Unknown"
+				}
 				region = result.Region
 				city = result.City
 			}
@@ -304,7 +307,7 @@ func printHelp() {
 	fmt.Println("  -o string        结果文件名 (默认: IP_Speed.csv)")
 	fmt.Println("  -h               显示帮助信息")
 	fmt.Println("  -notest          不进行测速，只生成随机IP (需配合 -useip4 或 -useip6 使用)")
-	fmt.Println("  -showall         显示所有结果，包括未查询到数据中心的结果")
+	fmt.Println("  -showall         使用后显示所有结果，包括未查询到数据中心的结果")
 
 	fmt.Println("\n测速参数:")
 	fmt.Println("  -t int           延迟测试次数 (默认: 4)")
