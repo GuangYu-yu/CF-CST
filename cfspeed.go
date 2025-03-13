@@ -38,6 +38,12 @@ type TestResult struct {
 	LossRate   float64
 }
 
+type coloInfo struct {
+	dataCenter string
+	region     string
+	city       string
+}
+
 type CIDRGroup struct {
 	CIDR       string
 	IPs        []string
@@ -839,6 +845,10 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 	var mutex sync.Mutex
 	var wg sync.WaitGroup
 
+	// 添加CIDR数据中心信息缓存
+	cidrColoCache := make(map[string]coloInfo)
+	var cacheMapMutex sync.RWMutex
+
 	// 创建任务通道，使用固定大小的缓冲区
 	tasks := make(chan struct{}, maxThreads)
 
@@ -898,8 +908,31 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 					avgLatency := totalLatency / time.Duration(successCount)
 					lossRate := float64(testCount-successCount) / float64(testCount)
 
-					// 获取数据中心信息（保持原有逻辑）
-					dataCenter, region, city := getDataCenterInfo(ip, locationMap)
+					// 先检查缓存中是否已有该CIDR的数据中心信息
+					var dataCenter, region, city string
+					cacheMapMutex.RLock()
+					if cache, ok := cidrColoCache[group.CIDR]; ok && cache.dataCenter != "Unknown" {
+						dataCenter = cache.dataCenter
+						region = cache.region
+						city = cache.city
+					}
+					cacheMapMutex.RUnlock()
+
+					// 如果缓存中没有找到，则查询数据中心信息
+					if dataCenter == "" {
+						dataCenter, region, city = getDataCenterInfo(ip, locationMap)
+
+						// 如果查询到有效的数据中心信息，则缓存
+						if dataCenter != "Unknown" {
+							cacheMapMutex.Lock()
+							cidrColoCache[group.CIDR] = coloInfo{
+								dataCenter: dataCenter,
+								region:     region,
+								city:       city,
+							}
+							cacheMapMutex.Unlock()
+						}
+					}
 
 					result := TestResult{
 						IP:         ip,
@@ -980,7 +1013,7 @@ func getDataCenterInfo(ip string, locationMap map[string]location) (string, stri
 	for retry := 0; retry <= maxRetries; retry++ {
 		// 处理 IPv6 地址
 		hostIP := ip
-		if strings.Contains(ip, ":") {
+		if !strings.Contains(ip, ".") {
 			hostIP = "[" + ip + "]"
 		}
 
