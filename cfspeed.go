@@ -1349,7 +1349,7 @@ func writeResultsToCSV(results []TestResult, filename string) error {
 	defer writer.Flush()
 
 	// 写入标题行
-	err = writer.Write([]string{"IP&CIDR", "数据中心", "地区", "城市", "平均延迟(ms)", "丢包率(%)"})
+	err = writer.Write([]string{"CIDR", "数据中心", "地区", "城市", "平均延迟(ms)", "丢包率(%)"})
 	if err != nil {
 		return err
 	}
@@ -1459,7 +1459,7 @@ func printResultsSummary(results []TestResult) {
 
 	// 显示最佳结果表格
 	resultTable := tablewriter.NewWriter(os.Stdout)
-	resultTable.SetHeader([]string{"IP&CIDR", "地区(数据中心)", "平均延迟", "平均丢包"})
+	resultTable.SetHeader([]string{"CIDR", "地区(数据中心)", "平均延迟", "平均丢包"})
 	resultTable.SetBorder(false)
 	resultTable.SetColumnAlignment([]int{tablewriter.ALIGN_LEFT, tablewriter.ALIGN_LEFT, tablewriter.ALIGN_RIGHT, tablewriter.ALIGN_RIGHT})
 
