@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/csv"
@@ -16,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -841,11 +839,8 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 	var mutex sync.Mutex
 	var wg sync.WaitGroup
 
-	// 创建任务通道
-	type testTask struct {
-		ip    string
-		group *CIDRGroup
-	}
+	// 创建任务通道，使用固定大小的缓冲区
+	tasks := make(chan struct{}, maxThreads)
 
 	// 计算总IP数量
 	var totalIPs int
@@ -853,56 +848,20 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 		totalIPs += len(group.IPs)
 	}
 
-	// 根据任务总量动态调整缓冲区大小
-	bufferSize := totalIPs
-	if bufferSize > 10000 {
-		bufferSize = 10000 // 设置上限，避免内存占用过大
-	}
-	tasks := make(chan testTask, bufferSize)
-
 	var count int32
 	var failCount int32
 
-	// 添加速率限制相关变量
-	var requestCounter int32
-	requestLimit := int32(100)                           // 每100个请求后暂停
-	rateLimiter := time.NewTicker(time.Millisecond * 40) // 每40毫秒允许一个请求
-	defer rateLimiter.Stop()
+	// 遍历所有IP进行测试
+	for i := range cidrGroups {
+		group := &cidrGroups[i]
+		for _, ip := range group.IPs {
+			wg.Add(1)
+			go func(ip string, group *CIDRGroup) {
+				defer wg.Done()
 
-	// 添加暂停控制通道
-	go func() {
-		for {
-			if atomic.LoadInt32(&requestCounter) >= requestLimit {
-				// 达到请求限制，暂停一段时间
-				time.Sleep(time.Second * 2)           // 暂停2秒
-				atomic.StoreInt32(&requestCounter, 0) // 重置计数器
-			}
-			time.Sleep(time.Millisecond * 100) // 每100毫秒检查一次
-		}
-	}()
-
-	// 添加CIDR到数据中心信息的缓存映射
-	type coloInfo struct {
-		dataCenter string
-		region     string
-		city       string
-	}
-	cidrColoCache := make(map[string]coloInfo)
-	var cacheMapMutex sync.RWMutex
-
-	// 启动工作协程
-	for i := 0; i < maxThreads; i++ {
-		go func() {
-			for task := range tasks {
-				// 等待速率限制器的信号
-				<-rateLimiter.C
-
-				// 增加请求计数
-				atomic.AddInt32(&requestCounter, 1)
-
-				dialer := &net.Dialer{
-					Timeout: 1 * time.Second, // 使用1秒超时
-				}
+				// 使用通道控制并发
+				tasks <- struct{}{}
+				defer func() { <-tasks }()
 
 				successCount := 0
 				totalLatency := time.Duration(0)
@@ -911,22 +870,15 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 
 				// 进行多次测试
 				for i := 0; i < testCount; i++ {
-					// 每次测试前添加小延迟，避免请求过于集中
-					if i > 0 {
-						time.Sleep(time.Duration(15+rand.Intn(30)) * time.Millisecond)
-					}
-
 					start := time.Now()
-					conn, err := dialer.Dial("tcp", net.JoinHostPort(task.ip, strconv.Itoa(port)))
+					conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), time.Second)
 
 					if err != nil {
-						// 添加小的随机延迟，避免请求过于集中
-						time.Sleep(time.Duration(20+rand.Intn(10)) * time.Millisecond)
 						continue
 					}
 
 					latency := time.Since(start)
-					conn.Close() // 立即关闭连接
+					conn.Close()
 
 					successCount++
 					totalLatency += latency
@@ -939,44 +891,19 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 					}
 				}
 
-				// 如果所有测试都失败，跳过此IP但仍需完成任务
+				// 处理测试结果
 				if successCount == 0 {
-					// 增加失败计数
 					atomic.AddInt32(&failCount, 1)
 				} else {
-					// 计算平均延迟和丢包率
 					avgLatency := totalLatency / time.Duration(successCount)
 					lossRate := float64(testCount-successCount) / float64(testCount)
 
-					// 先检查缓存中是否已有该CIDR的数据中心信息
-					var dataCenter, region, city string
-					cacheMapMutex.RLock()
-					if cache, ok := cidrColoCache[task.group.CIDR]; ok && cache.dataCenter != "Unknown" {
-						dataCenter = cache.dataCenter
-						region = cache.region
-						city = cache.city
-					}
-					cacheMapMutex.RUnlock()
-
-					// 如果缓存中没有找到，则查询数据中心信息
-					if dataCenter == "" {
-						dataCenter, region, city = getDataCenterInfo(task.ip, locationMap)
-
-						// 如果查询到有效的数据中心信息，则缓存
-						if dataCenter != "Unknown" {
-							cacheMapMutex.Lock()
-							cidrColoCache[task.group.CIDR] = coloInfo{
-								dataCenter: dataCenter,
-								region:     region,
-								city:       city,
-							}
-							cacheMapMutex.Unlock()
-						}
-					}
+					// 获取数据中心信息（保持原有逻辑）
+					dataCenter, region, city := getDataCenterInfo(ip, locationMap)
 
 					result := TestResult{
-						IP:         task.ip,
-						CIDR:       task.group.CIDR,
+						IP:         ip,
+						CIDR:       group.CIDR,
 						DataCenter: dataCenter,
 						Region:     region,
 						City:       city,
@@ -985,40 +912,19 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 					}
 
 					mutex.Lock()
-					task.group.Results = append(task.group.Results, result)
+					group.Results = append(group.Results, result)
 					mutex.Unlock()
 				}
 
 				// 更新进度
 				current := atomic.AddInt32(&count, 1)
 				fmt.Printf("测试进度: %d/%d (%.2f%%)\r", current, totalIPs, float64(current)/float64(totalIPs)*100)
-
-				wg.Done() // 确保任务完成
-			}
-		}()
-	}
-
-	// 提交任务
-	for i := range cidrGroups {
-		group := &cidrGroups[i]
-		for _, ip := range group.IPs {
-			wg.Add(1)
-			// 使用非阻塞方式发送任务，避免死锁
-			select {
-			case tasks <- testTask{ip: ip, group: group}:
-				// 任务成功发送
-			default:
-				// 通道已满，等待一段时间后重试
-				time.Sleep(10 * time.Millisecond)
-				tasks <- testTask{ip: ip, group: group} // 再次尝试发送
-			}
+			}(ip, group)
 		}
 	}
 
-	// 关闭任务通道并等待所有任务完成
-	close(tasks)
 	wg.Wait()
-	fmt.Println() // 换行，避免进度条覆盖后续输出
+	fmt.Println()
 
 	// 打印测试结果统计
 	fmt.Printf("测试完成，总IP: %d，成功: %d，成功率: %.2f%%\n",
@@ -1056,103 +962,62 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 
 // 获取数据中心信息
 func getDataCenterInfo(ip string, locationMap map[string]location) (string, string, string) {
-	// 最大重试次数
 	maxRetries := 5
 
-	// 重试间隔
-	retryDelay := 200 * time.Millisecond
+	transport := &http.Transport{
+		DisableKeepAlives: true, // 禁用 keep-alive
+		IdleConnTimeout:   1 * time.Second,
+	}
 
-	// 添加静态速率限制，避免对同一服务器发送过多请求
-	time.Sleep(time.Duration(100+rand.Intn(100)) * time.Millisecond)
+	client := &http.Client{
+		Timeout:   1 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 
 	for retry := 0; retry <= maxRetries; retry++ {
-		// 重试延迟，但第一次尝试不需要等待
-		if retry > 0 {
-			time.Sleep(retryDelay)
+		// 处理 IPv6 地址
+		hostIP := ip
+		if strings.Contains(ip, ":") {
+			hostIP = "[" + ip + "]"
 		}
 
-		// 超时时间
-		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-
-		// 创建HTTP请求
-		requestURL := "http://" + net.JoinHostPort(ip, "80") + "/cdn-cgi/trace"
-
-		req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
+		req, err := http.NewRequest("HEAD", "http://cloudflare.com", nil)
 		if err != nil {
-			cancel() // 确保取消上下文
-			continue // 重试
+			continue
 		}
 
-		req.Header.Set("User-Agent", "Mozilla/5.0")
-		req.Close = true // 明确要求关闭连接
+		req.Host = "cloudflare.com"
+		req.URL.Host = hostIP
+		req.Close = true // 确保请求完成后关闭连接
 
-		// 创建一个简单的传输，不重用连接
-		tr := &http.Transport{
-			DisableKeepAlives:     true,
-			IdleConnTimeout:       100 * time.Millisecond,
-			ResponseHeaderTimeout: 500 * time.Millisecond,
-			ExpectContinueTimeout: 200 * time.Millisecond,
-			TLSHandshakeTimeout:   300 * time.Millisecond,
-		}
-
-		client := &http.Client{
-			Transport: tr,
-			Timeout:   1000 * time.Millisecond,
-		}
-
-		// 执行请求
 		resp, err := client.Do(req)
 		if err != nil {
-			cancel() // 确保取消上下文
-			continue // 重试
+			continue
 		}
 
-		// 读取响应体，使用更短的超时
-		bodyBuf := new(bytes.Buffer)
-		readCtx, readCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		cfRay := resp.Header.Get("Cf-Ray")
+		resp.Body.Close()
 
-		// 使用带缓冲的通道，避免goroutine泄漏
-		done := make(chan bool, 1)
-		go func() {
-			// 限制读取的数据量
-			_, _ = io.CopyN(bodyBuf, resp.Body, 1024) // 只读取前1KB数据
-			done <- true
-		}()
-
-		// 等待读取完成或超时
-		var readSuccess bool
-		select {
-		case <-done:
-			// 读取完成
-			readSuccess = true
-		case <-readCtx.Done():
-			// 读取超时
-			readSuccess = false
+		if cfRay == "" {
+			continue
 		}
 
-		resp.Body.Close() // 确保关闭响应体
-		readCancel()      // 取消读取上下文
-		cancel()          // 取消主上下文
-
-		if !readSuccess {
-			continue // 重试
+		lastDashIndex := strings.LastIndex(cfRay, "-")
+		if lastDashIndex == -1 {
+			continue
 		}
 
-		bodyStr := bodyBuf.String()
-		if strings.Contains(bodyStr, "uag=Mozilla/5.0") {
-			regex := regexp.MustCompile(`colo=([A-Z]+)`)
-			matches := regex.FindStringSubmatch(bodyStr)
-			if len(matches) > 1 {
-				dataCenter := matches[1]
-				loc, ok := locationMap[dataCenter]
-				if ok {
-					return dataCenter, loc.Region, loc.City
-				}
-				return dataCenter, "", ""
+		dataCenter := cfRay[lastDashIndex+1:]
+		if dataCenter != "" {
+			loc, ok := locationMap[dataCenter]
+			if ok {
+				return dataCenter, loc.Region, loc.City
 			}
+			return dataCenter, "", ""
 		}
-
-		// 如果到这里还没有返回结果，说明当前尝试失败，继续下一次重试
 	}
 
 	// 所有重试都失败后返回Unknown
