@@ -23,9 +23,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/sync/semaphore"
-
 	"github.com/olekukonko/tablewriter"
+	"golang.org/x/sync/semaphore"
+	"golang.org/x/term"
 )
 
 // ----------------------- 数据类型定义 -----------------------
@@ -860,6 +860,24 @@ func getLocationMap() (map[string]location, error) {
 	return nil, fmt.Errorf("在%d次尝试后仍然失败: %v", maxRetries, lastErr)
 }
 
+// 时间格式化
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := d / time.Hour
+	d -= h * time.Hour
+	m := d / time.Minute
+	d -= m * time.Minute
+	s := d / time.Second
+
+	if h > 0 {
+		return fmt.Sprintf("%d时%d分%d秒", h, m, s)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%d分%d秒", m, s)
+	}
+	return fmt.Sprintf("%d秒", s)
+}
+
 // 测试IP性能
 func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMap map[string]location) []CIDRGroup {
 	// 初始化并发控制
@@ -886,6 +904,9 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 		tcpFailCount    int32 // TCP测试失败数
 		tcpSuccessCount int32 // TCP测试成功数
 	)
+
+	// 添加开始时间记录
+	startTime := time.Now()
 
 	// 创建任务通道
 	type task struct {
@@ -973,8 +994,46 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 					atomic.AddInt32(&tcpFailCount, 1)
 				}
 
+				// 在工作池的处理循环中
 				current := atomic.AddInt32(&processedCount, 1)
-				fmt.Printf("测试进度: %d/%d (%.2f%%)\r", current, totalIPs, float64(current)/float64(totalIPs)*100)
+
+				// 添加刷新间隔控制
+				if current%5 == 0 || current == int32(totalIPs) {
+					elapsed := time.Since(startTime)
+
+					// 获取终端宽度并计算进度条宽度
+					termWidth, _, err := term.GetSize(int(os.Stdout.Fd()))
+					width := termWidth / 2
+					if err != nil || width < 20 {
+						width = 20 // 如果获取失败或宽度太小，使用最小值
+					}
+
+					// 先清除当前行
+					fmt.Print("\033[2K") // 清除整行
+
+					// 构建完整的进度信息字符串
+					var progressInfo strings.Builder
+					fmt.Fprintf(&progressInfo, "\r%d/%d [", current, totalIPs)
+
+					// 打印进度条
+					progress := float64(current) / float64(totalIPs)
+					pos := int(progress * float64(width))
+
+					for i := 0; i < width; i++ {
+						if i < pos {
+							progressInfo.WriteString("█")
+						} else {
+							progressInfo.WriteString("░")
+						}
+					}
+
+					// 只添加时间信息
+					fmt.Fprintf(&progressInfo, "] %s", formatDuration(elapsed))
+
+					// 一次性输出整个字符串
+					fmt.Print(progressInfo.String())
+				}
+
 				wg.Done()
 			}
 		}()
@@ -1024,7 +1083,39 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 			progressMutex.Lock()
 			if current > lastProgress {
 				lastProgress = current
-				fmt.Printf("数据中心查询进度: %d/%d (%.2f%%)\r", current, totalQueries, float64(current)/float64(totalQueries)*100)
+				if current%5 == 0 || current == int32(totalQueries) {
+					// 计算进度
+					var progress float64 = float64(current) / float64(totalQueries)
+
+					// 获取终端宽度并计算进度条宽度
+					termWidth, _, err := term.GetSize(int(os.Stdout.Fd()))
+					width := termWidth / 2
+					if err != nil || width < 20 {
+						width = 20 // 如果获取失败或宽度太小，使用最小值
+					}
+
+					// 先清除当前行
+					fmt.Print("\033[2K") // 清除整行
+
+					// 构建完整的进度信息字符串
+					var progressInfo strings.Builder
+					fmt.Fprintf(&progressInfo, "\r%d/%d [", current, totalQueries)
+
+					pos := int(progress * float64(width))
+					for i := 0; i < width; i++ {
+						if i < pos {
+							progressInfo.WriteString("█")
+						} else {
+							progressInfo.WriteString("░")
+						}
+					}
+
+					// 添加百分比
+					fmt.Fprintf(&progressInfo, "] %.2f%%", progress*100)
+
+					// 一次性输出整个字符串
+					fmt.Print(progressInfo.String())
+				}
 			}
 			progressMutex.Unlock()
 
