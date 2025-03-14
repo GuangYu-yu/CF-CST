@@ -110,7 +110,7 @@ func runMainProgram() {
 	maxLatency := flag.Int("tl", 500, "平均延迟上限(ms)")
 	minLatency := flag.Int("tll", 0, "平均延迟下限(ms)")
 	maxLossRate := flag.Float64("tlr", 0.5, "丢包率上限")
-	scanThreads := flag.Int("n", 128, "扫描并发数")
+	scanThreads := flag.Int("n", runtime.NumCPU()*4, "并发数")
 	printCount := flag.String("p", "all", "输出延迟最低的CIDR数量")
 	outFile := flag.String("o", "IP_Speed.csv", "写入结果文件")
 	noCSV := flag.Bool("nocsv", false, "不输出CSV文件")
@@ -128,7 +128,10 @@ func runMainProgram() {
 		// 限制最大并发数为1024
 		*scanThreads = 1024
 	}
-	globalSem = semaphore.NewWeighted(int64(*scanThreads))
+
+	// 使用统一的并发控制
+	maxConcurrent := *scanThreads
+	globalSem = semaphore.NewWeighted(int64(maxConcurrent))
 
 	// 显示帮助信息
 	if *help {
