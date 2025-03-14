@@ -23,6 +23,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sync/semaphore"
+
 	"github.com/olekukonko/tablewriter"
 )
 
@@ -65,6 +67,10 @@ type location struct {
 }
 
 // ----------------------- 主程序入口 -----------------------
+
+var (
+	globalSem *semaphore.Weighted
+)
 
 func main() {
 	// 添加全局超时控制
@@ -122,6 +128,7 @@ func runMainProgram() {
 		// 限制最大并发数为1024
 		*scanThreads = 1024
 	}
+	globalSem = semaphore.NewWeighted(int64(*scanThreads))
 
 	// 显示帮助信息
 	if *help {
@@ -850,13 +857,12 @@ func getLocationMap() (map[string]location, error) {
 	return nil, fmt.Errorf("在%d次尝试后仍然失败: %v", maxRetries, lastErr)
 }
 
-// 全局通道
-var globalTasks = make(chan struct{}, 128) // 默认大小，会被 maxThreads 参数覆盖
-
 // 测试IP性能
 func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMap map[string]location) []CIDRGroup {
-	// 重置全局通道大小
-	globalTasks = make(chan struct{}, maxThreads)
+	// 初始化并发控制
+	if globalSem == nil {
+		globalSem = semaphore.NewWeighted(int64(maxThreads))
+	}
 
 	var mutex sync.Mutex
 	var wg sync.WaitGroup
@@ -1097,8 +1103,11 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 // 获取数据中心信息
 func getDataCenterInfo(ip string, locationMap map[string]location) (string, string, string) {
 	// 使用全局通道控制并发
-	globalTasks <- struct{}{}
-	defer func() { <-globalTasks }()
+	ctx := context.Background()
+	if err := globalSem.Acquire(ctx, 1); err != nil {
+		return "Unknown", "", ""
+	}
+	defer globalSem.Release(1)
 
 	maxRetries := 5
 	transport := &http.Transport{
