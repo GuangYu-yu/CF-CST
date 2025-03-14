@@ -52,9 +52,11 @@ jobs:
           go mod init cfspeed
 
           go get github.com/olekukonko/tablewriter
-
+          go get golang.org/x/sync/semaphore
+          go get golang.org/x/term
+         
           go mod tidy
-
+          
       - name: 构建所有平台  
         run: |  
           # 创建构建目录和存储目录
