@@ -117,6 +117,12 @@ func runMainProgram() {
 
 	flag.Parse()
 
+	// 限制最大并发数
+	if *scanThreads > 1024 {
+		// 限制最大并发数为1024
+		*scanThreads = 1024
+	}
+
 	// 显示帮助信息
 	if *help {
 		printHelp()
@@ -271,8 +277,12 @@ func runMainProgram() {
 	// 限制输出数量
 	if *printCount != "all" {
 		count, err := strconv.Atoi(*printCount)
-		if err == nil && count > 0 && count < len(filteredResults) {
-			filteredResults = filteredResults[:count]
+		if err == nil && count > 0 {
+			// 只有当结果数量大于指定数量时才截取
+			if count < len(filteredResults) {
+				filteredResults = filteredResults[:count]
+			}
+			// 否则保持原有结果不变
 		}
 	}
 
@@ -1251,14 +1261,16 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 				fmt.Printf("IPv4生成数量已限制为 %d 个\n", ipv4Limit)
 			}
 
-			// 准备CIDR列表
+			// 准备CIDR列表和计算总IP数量
 			type cidrInfo struct {
-				ipNet *net.IPNet
+				ipNet   *net.IPNet
+				ipCount int
 			}
 
 			var cidrList []cidrInfo
+			totalAvailableIPs := 0
 
-			// 初始化CIDR信息
+			// 初始化CIDR信息并计算总IP数量
 			for _, result := range results {
 				ip := net.ParseIP(result.IP)
 				if ip == nil || ip.To4() == nil {
@@ -1271,10 +1283,27 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 				}
 
 				if ipNet.IP.To4() != nil {
+					ones, _ := ipNet.Mask.Size()
+					ipCount := 1 << uint(32-ones)
+
 					cidrList = append(cidrList, cidrInfo{
-						ipNet: ipNet,
+						ipNet:   ipNet,
+						ipCount: ipCount,
 					})
+
+					totalAvailableIPs += ipCount
+
+					// 一旦总IP数量足够，就可以开始生成随机IP
+					if totalAvailableIPs >= targetCount {
+						break
+					}
 				}
+			}
+
+			// 如果总IP数量不足，则使用所有可用的IP
+			if totalAvailableIPs < targetCount {
+				fmt.Printf("警告: 可用IPv4地址总数(%d)小于请求数量(%d)\n", totalAvailableIPs, targetCount)
+				targetCount = totalAvailableIPs
 			}
 
 			// 循环生成IP直到达到指定数量
@@ -1296,10 +1325,6 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 				// 移动到下一个CIDR
 				cidrIndex = (cidrIndex + 1) % len(cidrList)
 			}
-
-			if ipv4Count < targetCount {
-				fmt.Printf("警告: 无法生成足够的IPv4地址，已生成 %d 个\n", ipv4Count)
-			}
 		}
 	}
 
@@ -1317,10 +1342,13 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 
 			// 准备CIDR列表
 			type cidrInfo struct {
-				ipNet *net.IPNet
+				ipNet    *net.IPNet
+				maskSize int
 			}
 
 			var cidrList []cidrInfo
+			hasLargeCIDR := false  // 标记是否有/0到/108的大CIDR
+			totalSmallCIDRIPs := 0 // 记录/109到/128的CIDR的IP总数
 
 			// 初始化CIDR信息
 			for _, result := range results {
@@ -1335,10 +1363,35 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 				}
 
 				if ipNet.IP.To16() != nil {
+					ones, _ := ipNet.Mask.Size()
+
+					// 检查是否有/0到/108的CIDR
+					if ones <= 108 {
+						hasLargeCIDR = true
+						// 发现大CIDR，说明IP数量足够，不需要继续计算
+						break
+					} else {
+						// 计算小CIDR的IP数量并累加
+						ipCount := 1 << uint(128-ones)
+						totalSmallCIDRIPs += ipCount
+
+						// 如果小CIDR的IP总数已经足够，也可以停止计算
+						if totalSmallCIDRIPs >= targetCount {
+							break
+						}
+					}
+
 					cidrList = append(cidrList, cidrInfo{
-						ipNet: ipNet,
+						ipNet:    ipNet,
+						maskSize: ones,
 					})
 				}
+			}
+
+			// 如果没有大CIDR且小CIDR的IP总数不足，调整目标数量
+			if !hasLargeCIDR && totalSmallCIDRIPs < targetCount {
+				fmt.Printf("警告: 可用IPv6地址总数(%d)小于请求数量(%d)\n", totalSmallCIDRIPs, targetCount)
+				targetCount = totalSmallCIDRIPs
 			}
 
 			// 循环生成IP直到达到指定数量
@@ -1359,6 +1412,10 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 
 				// 移动到下一个CIDR
 				cidrIndex = (cidrIndex + 1) % len(cidrList)
+			}
+
+			if ipv6Count > 0 {
+				fmt.Printf("成功生成 %d 个IPv6地址\n", ipv6Count)
 			}
 		}
 	}
