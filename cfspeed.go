@@ -332,7 +332,7 @@ func printHelp() {
 	fmt.Println("  -tp int          测试端口号 (默认: 443)")
 	fmt.Println("  -ts int          每个CIDR测试的IP数量 (默认: 2)")
 	fmt.Println("  -n int           并发测试线程数量 (默认: 128)")
-	fmt.Println("  避免 -t 和 -ts 导致测速量过于庞大！")
+	fmt.Println("\n  注意避免 -t 和 -ts 导致测速量过于庞大！")
 
 	fmt.Println("\n筛选参数:")
 	fmt.Println("  -colo string     指定数据中心，多个用逗号分隔 (例: HKG,NRT,LAX,SJC)")
@@ -1433,10 +1433,7 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 			}
 
 			var cidrList []cidrInfo
-			var checkList []struct {
-				ipNet    *net.IPNet
-				maskSize int
-			}
+
 			hasLargeCIDR := false  // 标记是否有/0到/108的大CIDR
 			totalSmallCIDRIPs := 0 // 记录/109到/128的CIDR的IP总数
 
@@ -1456,10 +1453,6 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 					// 计算小CIDR的IP数量并累加
 					ipCount := 1 << uint(128-ones)
 					totalSmallCIDRIPs += ipCount
-					checkList = append(checkList, struct {
-						ipNet    *net.IPNet
-						maskSize int
-					}{ipNet, ones})
 				}
 
 				// 如果小CIDR的IP总数已经足够，也可以停止检查
