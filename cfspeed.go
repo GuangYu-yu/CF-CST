@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -175,6 +174,29 @@ func runMainProgram() {
 	expandedCIDRs := expandCIDRs(cidrList)
 	fmt.Printf("处理后共有 %d 个CIDR\n", len(expandedCIDRs))
 
+	// 如果指定了 -notest 参数，直接生成IP文件并退出
+	if *noTest {
+		var results []TestResult
+		for _, cidr := range expandedCIDRs {
+			_, _, err := net.ParseCIDR(cidr)
+			if err != nil {
+				continue
+			}
+			results = append(results, TestResult{
+				CIDR: cidr,
+			})
+		}
+
+		fmt.Printf("跳过测速，直接生成IP列表\n")
+		err = generateIPFile(results, *useIPv4, *useIPv6, *ipTxtFile)
+		if err != nil {
+			fmt.Printf("生成IP文件失败: %v\n", err)
+		} else {
+			fmt.Printf("IP列表已写入: %s\n", *ipTxtFile)
+		}
+		return
+	}
+
 	// 获取Cloudflare数据中心位置信息
 	locationMap, err := getLocationMap()
 	if err != nil {
@@ -185,34 +207,6 @@ func runMainProgram() {
 	// 从每个CIDR中随机选择IP进行测试
 	cidrGroups := generateRandomIPs(expandedCIDRs, *ipPerCIDR)
 	fmt.Printf("共生成 %d 个CIDR组，每组 %d 个IP\n", len(cidrGroups), *ipPerCIDR)
-
-	// 如果指定了 -notest 参数，直接生成IP文件并退出
-	if *noTest {
-		// 创建一个空的结果列表，只包含IP和CIDR信息
-		var results []TestResult
-		for _, group := range cidrGroups {
-			for _, ip := range group.IPs {
-				results = append(results, TestResult{
-					IP:         ip,
-					CIDR:       group.CIDR,
-					DataCenter: "Unknown",
-					Region:     "",
-					City:       "",
-					AvgLatency: 0,
-					LossRate:   0,
-				})
-			}
-		}
-
-		// 输出IP列表
-		err = generateIPFile(results, *useIPv4, *useIPv6, *ipTxtFile)
-		if err != nil {
-			fmt.Printf("生成IP文件失败: %v\n", err)
-		} else {
-			fmt.Printf("IP列表已写入: %s\n", *ipTxtFile)
-		}
-		return
-	}
 
 	// 测试IP性能
 	cidrGroups = testIPs(cidrGroups, *portFlag, *testCount, *scanThreads, locationMap)
@@ -338,6 +332,7 @@ func printHelp() {
 	fmt.Println("  -tp int          测试端口号 (默认: 443)")
 	fmt.Println("  -ts int          每个CIDR测试的IP数量 (默认: 2)")
 	fmt.Println("  -n int           并发测试线程数量 (默认: 128)")
+	fmt.Println("  避免 -t 和 -ts 导致测速量过于庞大！")
 
 	fmt.Println("\n筛选参数:")
 	fmt.Println("  -colo string     指定数据中心，多个用逗号分隔 (例: HKG,NRT,LAX,SJC)")
@@ -359,8 +354,8 @@ func printHelp() {
 
 // 从URL获取CIDR列表
 func getCIDRFromURL(url string) ([]string, error) {
-	maxRetries := 5
-	retryDelay := 2 * time.Second
+	maxRetries := 10
+	retryDelay := 3 * time.Second
 
 	var cidrList []string
 	var lastErr error
@@ -606,19 +601,18 @@ func generateRandomIPs(cidrList []string, ipPerCIDR int) []CIDRGroup {
 	var mutex sync.Mutex
 	var wg sync.WaitGroup
 
-	// 控制并发数量
-	maxConcurrent := runtime.NumCPU() * 2
-	semaphore := make(chan struct{}, maxConcurrent)
-
+	// 使用全局信号量控制并发
 	for _, cidr := range cidrList {
 		wg.Add(1)
-		semaphore <- struct{}{}
 
 		go func(cidr string) {
-			defer func() {
-				<-semaphore
-				wg.Done()
-			}()
+			defer wg.Done()
+
+			// 使用全局信号量控制并发
+			if err := globalSem.Acquire(context.Background(), 1); err != nil {
+				return
+			}
+			defer globalSem.Release(1)
 
 			_, ipNet, err := net.ParseCIDR(cidr)
 			if err != nil {
@@ -1309,15 +1303,9 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 		if ipv4Mode == "all" {
 			// 遍历每个CIDR生成所有IP
 			for _, result := range results {
-				ip := net.ParseIP(result.IP)
-				if ip == nil || ip.To4() == nil {
-					continue // 跳过非IPv4
-				}
-
-				// 解析CIDR
 				_, ipNet, err := net.ParseCIDR(result.CIDR)
-				if err != nil {
-					continue
+				if err != nil || ipNet.IP.To4() == nil {
+					continue // 跳过非IPv4
 				}
 
 				// 获取掩码大小
@@ -1375,14 +1363,9 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 
 			// 初始化CIDR信息并计算总IP数量
 			for _, result := range results {
-				ip := net.ParseIP(result.IP)
-				if ip == nil || ip.To4() == nil {
-					continue
-				}
-
 				_, ipNet, err := net.ParseCIDR(result.CIDR)
-				if err != nil {
-					continue
+				if err != nil || ipNet.IP.To4() == nil {
+					continue // 跳过非IPv4
 				}
 
 				if ipNet.IP.To4() != nil {
@@ -1450,45 +1433,52 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 			}
 
 			var cidrList []cidrInfo
+			var checkList []struct {
+				ipNet    *net.IPNet
+				maskSize int
+			}
 			hasLargeCIDR := false  // 标记是否有/0到/108的大CIDR
 			totalSmallCIDRIPs := 0 // 记录/109到/128的CIDR的IP总数
 
-			// 初始化CIDR信息
+			// 第一次遍历：检查IP数量是否足够
 			for _, result := range results {
-				ip := net.ParseIP(result.IP)
-				if ip == nil || ip.To4() != nil {
-					continue
-				}
-
 				_, ipNet, err := net.ParseCIDR(result.CIDR)
-				if err != nil {
+				if err != nil || ipNet.IP.To4() != nil {
+					continue // 跳过无效CIDR和非IPv6
+				}
+
+				ones, _ := ipNet.Mask.Size()
+				// 检查是否有/0到/108的大CIDR
+				if ones <= 108 {
+					hasLargeCIDR = true
+					break
+				} else {
+					// 计算小CIDR的IP数量并累加
+					ipCount := 1 << uint(128-ones)
+					totalSmallCIDRIPs += ipCount
+					checkList = append(checkList, struct {
+						ipNet    *net.IPNet
+						maskSize int
+					}{ipNet, ones})
+				}
+
+				// 如果小CIDR的IP总数已经足够，也可以停止检查
+				if totalSmallCIDRIPs >= targetCount {
+					break
+				}
+			}
+
+			// 第二次遍历：收集所有CIDR
+			for _, result := range results {
+				_, ipNet, err := net.ParseCIDR(result.CIDR)
+				if err != nil || ipNet.IP.To4() != nil {
 					continue
 				}
-
-				if ipNet.IP.To16() != nil {
-					ones, _ := ipNet.Mask.Size()
-
-					// 检查是否有/0到/108的CIDR
-					if ones <= 108 {
-						hasLargeCIDR = true
-						// 发现大CIDR，说明IP数量足够，不需要继续计算
-						break
-					} else {
-						// 计算小CIDR的IP数量并累加
-						ipCount := 1 << uint(128-ones)
-						totalSmallCIDRIPs += ipCount
-
-						// 如果小CIDR的IP总数已经足够，也可以停止计算
-						if totalSmallCIDRIPs >= targetCount {
-							break
-						}
-					}
-
-					cidrList = append(cidrList, cidrInfo{
-						ipNet:    ipNet,
-						maskSize: ones,
-					})
-				}
+				ones, _ := ipNet.Mask.Size()
+				cidrList = append(cidrList, cidrInfo{
+					ipNet:    ipNet,
+					maskSize: ones,
+				})
 			}
 
 			// 如果没有大CIDR且小CIDR的IP总数不足，调整目标数量
