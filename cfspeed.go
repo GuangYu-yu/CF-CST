@@ -9,14 +9,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"math/big"
 	"math/rand"
 	"net"
 	"net/http"
 	"os"
-	"runtime"
-	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,9 +22,9 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/fastcache"
+	"github.com/cheggaaa/pb/v3"
 	"github.com/olekukonko/tablewriter"
 	"golang.org/x/sync/semaphore"
-	"golang.org/x/term"
 )
 
 // ----------------------- 数据类型定义 -----------------------
@@ -50,12 +47,6 @@ func (r *TestResult) Clear() {
 	r.City = ""
 	r.AvgLatency = 0
 	r.LossRate = 0
-}
-
-type coloInfo struct {
-	DataCenter string `json:"dataCenter"`
-	Region     string `json:"region"`
-	City       string `json:"city"`
 }
 
 type CIDRGroup struct {
@@ -81,29 +72,20 @@ type location struct {
 // ----------------------- 主程序入口 -----------------------
 
 var (
-	globalSem *semaphore.Weighted
+	globalSem   *semaphore.Weighted
+	globalCache *fastcache.Cache
 )
 
-var (
-	// TCP 测试结果缓存
-	tcpResultCache *fastcache.Cache
-	// 数据中心信息缓存
-	cidrColoCache *fastcache.Cache
-	// 缓存互斥锁
-	cacheMapMutex sync.RWMutex
-)
-
-// 内存管理辅助函数
-func freeMemory() {
-	runtime.GC()
-	debug.FreeOSMemory()
+var resultPool = sync.Pool{
+	New: func() interface{} {
+		return &TestResult{}
+	},
 }
 
 func main() {
-
-	// 初始化缓存
-	tcpResultCache = fastcache.New(64 * 1024 * 1024) // 64MB TCP测试结果缓存
-	cidrColoCache = fastcache.New(32 * 1024 * 1024)  // 32MB 数据中心信息缓存
+	// 初始化缓存，设置最大大小为 8MB
+	globalCache = fastcache.New(8 * 1024 * 1024)
+	defer globalCache.Reset()
 
 	// 添加全局超时控制
 	globalTimeout := 120 * time.Minute // 设置全局超时时间
@@ -921,382 +903,170 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 	var wg sync.WaitGroup
 
 	// 计算总IP数量
-	var totalIPs int
+	totalIPs := 0
 	for _, group := range cidrGroups {
 		totalIPs += len(group.IPs)
 	}
 
-	// TCP测试相关计数器
+	// CIDR数据中心信息缓存
+	type cidrCache struct {
+		sync.RWMutex
+		dataCenter string
+		region     string
+		city       string
+		found      bool
+	}
+	cidrColoMap := make(map[string]*cidrCache)
+
+	// 初始化CIDR缓存
+	for _, group := range cidrGroups {
+		cidrColoMap[group.CIDR] = &cidrCache{}
+	}
+
+	// 计数器
 	var (
-		processedCount  int32 // 已处理的IP数量
-		tcpFailCount    int32 // TCP测试失败数
-		tcpSuccessCount int32 // TCP测试成功数
+		processedCount  int32
+		tcpSuccessCount int32
+		tcpFailCount    int32
 	)
 
-	// 添加开始时间记录
 	startTime := time.Now()
 
-	// 创建任务通道
-	type task struct {
-		ip    string
-		group *CIDRGroup
-	}
-	tasks := make(chan task, maxThreads*2)
-	// 限制 pendingDataCenterQueries 的初始容量
-	pendingDataCenterQueries := make([]struct {
-		ip    string
-		group *CIDRGroup
-	}, 0, totalIPs) // 设置合理的初始容量
-
-	// 缓存清理函数
-	cleanCache := func() {
-		cacheMapMutex.Lock()
-		defer cacheMapMutex.Unlock()
-		// 触发垃圾回收
-		freeMemory()
-	}
-
+	// 创建进度条
+	tmpl := `{{counters . }} {{ bar . "[" "=" (cycle . "↖" "↗" "↘" "↙") "_" "]"}} {{string . "elapsed"}}` // 使用等宽块字符
+	bar := pb.ProgressBarTemplate(tmpl).Start(totalIPs)
+	bar.Set("total", fmt.Sprintf("%d", totalIPs))
+	bar.Set("current", "0")
+	bar.Start()
+	defer bar.Finish()
 	// 创建工作池
 	for i := 0; i < maxThreads; i++ {
+		wg.Add(1)
 		go func() {
-			for t := range tasks {
-				// 首先检查 TCP 测试结果缓存
-				cacheKey := []byte("tcp:" + t.ip + ":" + strconv.Itoa(port) + ":" + strconv.Itoa(testCount))
-				cacheMapMutex.RLock()
-				cacheData := tcpResultCache.Get(nil, cacheKey)
-				cacheMapMutex.RUnlock()
+			defer wg.Done()
 
-				var result TestResult
-				cacheHit := false
+			for {
+				// 获取下一个要处理的IP任务
+				var currentIP string
+				var currentGroup *CIDRGroup
 
-				if len(cacheData) > 0 {
-					// 缓存命中，解析缓存数据
-					if err := json.Unmarshal(cacheData, &result); err == nil {
-						result.IP = t.ip
-						result.CIDR = t.group.CIDR
-
-						mutex.Lock()
-						t.group.Results = append(t.group.Results, result)
-						mutex.Unlock()
-
-						// 添加到数据中心查询队列
-						mutex.Lock()
-						pendingDataCenterQueries = append(pendingDataCenterQueries, struct {
-							ip    string
-							group *CIDRGroup
-						}{t.ip, t.group})
-						mutex.Unlock()
-
-						atomic.AddInt32(&tcpSuccessCount, 1)
-						cacheHit = true
-					}
-				}
-
-				if !cacheHit {
-					// TCP测试逻辑
-					localSuccessCount := 0
-					totalLatency := time.Duration(0)
-					minLatency := time.Duration(math.MaxInt64)
-					maxLatency := time.Duration(0)
-
-					for i := 0; i < testCount; i++ {
-						start := time.Now()
-						conn, err := net.DialTimeout("tcp", net.JoinHostPort(t.ip, strconv.Itoa(port)), time.Second)
-						if err != nil {
-							continue
-						}
-						latency := time.Since(start)
-						conn.Close()
-
-						localSuccessCount++
-						totalLatency += latency
-						if latency < minLatency {
-							minLatency = latency
-						}
-						if latency > maxLatency {
-							maxLatency = latency
-						}
-					}
-
-					if localSuccessCount > 0 {
-						avgLatency := totalLatency / time.Duration(localSuccessCount)
-						lossRate := float64(testCount-localSuccessCount) / float64(testCount)
-
-						mutex.Lock()
-						pendingDataCenterQueries = append(pendingDataCenterQueries, struct {
-							ip    string
-							group *CIDRGroup
-						}{t.ip, t.group})
-						mutex.Unlock()
-
-						result = TestResult{
-							IP:         t.ip,
-							CIDR:       t.group.CIDR,
-							AvgLatency: int(avgLatency.Milliseconds()),
-							LossRate:   lossRate,
-						}
-
-						// 将结果存入缓存
-						cacheMapMutex.Lock()
-						cacheData, _ := json.Marshal(TestResult{
-							AvgLatency: result.AvgLatency,
-							LossRate:   result.LossRate,
-						})
-						tcpResultCache.Set(cacheKey, cacheData)
-						cacheMapMutex.Unlock()
-
-						mutex.Lock()
-						t.group.Results = append(t.group.Results, result)
-						mutex.Unlock()
-
-						atomic.AddInt32(&tcpSuccessCount, 1)
-					} else {
-						atomic.AddInt32(&tcpFailCount, 1)
-					}
-				}
-
-				// 在工作池的处理循环中
-				current := atomic.AddInt32(&processedCount, 1)
-
-				// 添加刷新间隔控制
-				if current%5 == 0 || current == int32(totalIPs) {
-					elapsed := time.Since(startTime)
-
-					// 获取终端宽度并计算进度条宽度
-					termWidth, _, err := term.GetSize(int(os.Stdout.Fd()))
-					width := termWidth / 2
-					if err != nil || width < 20 {
-						width = 20 // 如果获取失败或宽度太小，使用最小值
-					}
-
-					// 先清除当前行
-					fmt.Print("\033[2K") // 清除整行
-
-					// 构建完整的进度信息字符串
-					var progressInfo strings.Builder
-					fmt.Fprintf(&progressInfo, "\r%d/%d [", current, totalIPs)
-
-					// 打印进度条
-					progress := float64(current) / float64(totalIPs)
-					pos := int(progress * float64(width))
-
-					for i := 0; i < width; i++ {
-						if i < pos {
-							progressInfo.WriteString("█")
-						} else {
-							progressInfo.WriteString("░")
-						}
-					}
-
-					// 只添加时间信息
-					fmt.Fprintf(&progressInfo, "] %s", formatDuration(elapsed))
-
-					// 一次性输出整个字符串
-					fmt.Print(progressInfo.String())
-				}
-
-				wg.Done()
-			}
-		}()
-	}
-
-	// 分发任务
-	for i := range cidrGroups {
-		group := &cidrGroups[i]
-		for _, ip := range group.IPs {
-			wg.Add(1)
-			tasks <- task{ip: ip, group: group}
-		}
-	}
-	close(tasks)
-
-	wg.Wait()
-	// 计算TCP测试成功率
-	tcpSuccessRate := float64(tcpSuccessCount) / float64(totalIPs) * 100
-	fmt.Printf("\nTCP测试完成，成功率: %.2f%% (%d/%d)\n", tcpSuccessRate, tcpSuccessCount, totalIPs)
-	fmt.Println("开始获取数据中心信息...")
-
-	// 第二阶段：获取数据中心信息
-	var dcWg sync.WaitGroup
-	dcTasks := make(chan struct{}, maxThreads)
-
-	// 添加数据中心查询统计
-	var dcQueryCount int32
-	var dcSuccessCount int32
-	totalQueries := len(pendingDataCenterQueries)
-
-	// 添加进度显示控制
-	var progressMutex sync.Mutex
-	var lastProgress int32
-
-	// 使用批处理方式处理数据中心查询
-	batchSize := maxThreads * 2                  // 每批处理的查询数量
-	totalQueries = len(pendingDataCenterQueries) // 保存总查询数量
-
-	// 创建一个副本或使用索引而不是修改原数组
-	queriesCopy := make([]struct {
-		ip    string
-		group *CIDRGroup
-	}, len(pendingDataCenterQueries))
-	copy(queriesCopy, pendingDataCenterQueries)
-
-	for i := 0; i < len(pendingDataCenterQueries); i += batchSize {
-		end := i + batchSize
-		if end > len(pendingDataCenterQueries) {
-			end = len(pendingDataCenterQueries)
-		}
-
-		// 处理当前批次
-		for j := i; j < end; j++ {
-			query := queriesCopy[j]
-			dcWg.Add(1)
-			go func(ip string, group *CIDRGroup) {
-				defer dcWg.Done()
-
-				// 使用通道控制并发
-				dcTasks <- struct{}{}
-				defer func() { <-dcTasks }()
-
-				current := atomic.AddInt32(&dcQueryCount, 1)
-
-				// 确保进度只增不减
-				progressMutex.Lock()
-				if current > lastProgress {
-					lastProgress = current
-					if current%5 == 0 || current == int32(totalQueries) {
-						// 计算进度
-						var progress float64 = float64(current) / float64(totalQueries)
-
-						// 获取终端宽度并计算进度条宽度
-						termWidth, _, err := term.GetSize(int(os.Stdout.Fd()))
-						width := termWidth / 2
-						if err != nil || width < 20 {
-							width = 20 // 如果获取失败或宽度太小，使用最小值
-						}
-
-						// 先清除当前行
-						fmt.Print("\033[2K") // 清除整行
-
-						// 构建完整的进度信息字符串
-						var progressInfo strings.Builder
-						fmt.Fprintf(&progressInfo, "\r%d/%d [", current, totalQueries)
-
-						pos := int(progress * float64(width))
-						for i := 0; i < width; i++ {
-							if i < pos {
-								progressInfo.WriteString("█")
-							} else {
-								progressInfo.WriteString("░")
-							}
-						}
-
-						// 添加百分比
-						fmt.Fprintf(&progressInfo, "] %.2f%%", progress*100)
-
-						// 一次性输出整个字符串
-						fmt.Print(progressInfo.String())
-					}
-				}
-				progressMutex.Unlock()
-
-				// 先检查缓存 - 修改缓存键设计，使用 IP 而不是 CIDR
-				var dataCenter, region, city string
-				cacheMapMutex.RLock()
-				// 使用 IP 作为缓存键，而不是 CIDR
-				cacheKey := []byte("dc:" + ip)
-				cacheData := cidrColoCache.Get(nil, cacheKey)
-				if len(cacheData) > 0 {
-					// 解析缓存数据
-					var info coloInfo
-					if err := json.Unmarshal(cacheData, &info); err == nil {
-						dataCenter = info.DataCenter
-						region = info.Region
-						city = info.City
-						if dataCenter != "Unknown" {
-							atomic.AddInt32(&dcSuccessCount, 1) // 缓存命中也算成功
-						}
-					}
-				}
-				cacheMapMutex.RUnlock()
-
-				// 如果缓存中没有，则查询
-				if dataCenter == "" {
-					dataCenter, region, city = getDataCenterInfo(ip, locationMap)
-
-					if dataCenter != "Unknown" {
-						atomic.AddInt32(&dcSuccessCount, 1) // 查询成功
-						// 使用 IP 作为缓存键存储
-						cacheMapMutex.Lock()
-						cacheData, _ := json.Marshal(coloInfo{
-							DataCenter: dataCenter,
-							Region:     region,
-							City:       city,
-						})
-						cidrColoCache.Set(cacheKey, cacheData)
-						cacheMapMutex.Unlock()
-					}
-				}
-
-				// 更新测试结果
 				mutex.Lock()
-				for i := range group.Results {
-					if group.Results[i].IP == ip {
-						group.Results[i].DataCenter = dataCenter
-						group.Results[i].Region = region
-						group.Results[i].City = city
+				for i := range cidrGroups {
+					if len(cidrGroups[i].IPs) > 0 {
+						currentGroup = &cidrGroups[i]
+						currentIP = currentGroup.IPs[0]
+						currentGroup.IPs = currentGroup.IPs[1:]
 						break
 					}
 				}
 				mutex.Unlock()
-			}(query.ip, query.group)
-		}
 
-		// 等待当前批次完成
-		dcWg.Wait()
+				if currentIP == "" {
+					return // 所有IP已处理完毕
+				}
 
-		// 每批处理完成后主动清理内存
-		runtime.GC()
-		debug.FreeOSMemory()
-	}
+				// 从对象池获取对象
+				result := resultPool.Get().(*TestResult)
+				result.Clear() // 清理复用对象的旧数据
+				result.IP = currentIP
+				result.CIDR = currentGroup.CIDR
 
-	cleanCache()  // 清理不再需要的缓存
-	fmt.Println() // 添加换行，避免最后的进度显示被覆盖
-	// 计算数据中心查询成功率
-	dcSuccessRate := float64(dcSuccessCount) / float64(dcQueryCount) * 100
-	fmt.Printf("数据中心信息获取完成，成功率: %.2f%% (%d/%d)\n", dcSuccessRate, dcSuccessCount, dcQueryCount)
+				// 执行TCP测试
+				localSuccessCount := 0
+				totalLatency := time.Duration(0)
+				for i := 0; i < testCount; i++ {
+					start := time.Now()
+					conn, err := net.DialTimeout("tcp", net.JoinHostPort(currentIP, strconv.Itoa(port)), time.Second)
+					if err != nil {
+						continue
+					}
+					latency := time.Since(start)
+					conn.Close()
 
-	// 计算每个组的平均性能
-	for i := range cidrGroups {
-		group := &cidrGroups[i]
-		if len(group.Results) == 0 {
-			continue
-		}
+					localSuccessCount++
+					totalLatency += latency
+				}
 
-		var totalLatency int
-		var totalLossRate float64
-		for _, result := range group.Results {
-			totalLatency += result.AvgLatency
-			totalLossRate += result.LossRate
+				if localSuccessCount > 0 {
+					// TCP测试成功
+					avgLatency := totalLatency / time.Duration(localSuccessCount)
+					result.AvgLatency = int(avgLatency.Milliseconds())
+					result.LossRate = float64(testCount-localSuccessCount) / float64(testCount)
 
-			if group.DataCenter == "" && result.DataCenter != "Unknown" {
-				group.DataCenter = result.DataCenter
-				group.Region = result.Region
-				group.City = result.City
+					// 检查CIDR是否已有数据中心信息
+					cache := cidrColoMap[currentGroup.CIDR]
+					cache.RLock()
+					if cache.found {
+						result.DataCenter = cache.dataCenter
+						result.Region = cache.region
+						result.City = cache.city
+						cache.RUnlock()
+					} else {
+						cache.RUnlock()
+						dataCenter, region, city := getDataCenterInfo(currentIP, locationMap)
+						if dataCenter != "Unknown" {
+							cache.Lock()
+							if !cache.found {
+								cache.dataCenter = dataCenter
+								cache.region = region
+								cache.city = city
+								cache.found = true
+							}
+							cache.Unlock()
+						}
+						result.DataCenter = dataCenter
+						result.Region = region
+						result.City = city
+					}
+
+					mutex.Lock()
+					currentGroup.Results = append(currentGroup.Results, *result)
+					mutex.Unlock()
+
+					// 将对象放回池中
+					resultPool.Put(result)
+					atomic.AddInt32(&tcpSuccessCount, 1)
+				} else {
+					// 测试失败也要放回池中
+					resultPool.Put(result)
+					atomic.AddInt32(&tcpFailCount, 1)
+				}
+
+				// 更新进度
+				current := atomic.AddInt32(&processedCount, 1)
+				elapsed := time.Since(startTime)
+				bar.Set("current", fmt.Sprintf("%d", current))
+				bar.Set("elapsed", formatDuration(elapsed))
+				bar.SetCurrent(int64(current))
 			}
-		}
-
-		group.AvgLatency = totalLatency / len(group.Results)
-		group.LossRate = totalLossRate / float64(len(group.Results))
+		}()
 	}
 
-	// 清理缓存
-	cleanCache()
+	wg.Wait()
+	fmt.Println()
+
+	// 清理已处理的IP列表
+	for i := range cidrGroups {
+		cidrGroups[i].IPs = nil
+	}
+
+	// 计算TCP测试成功率
+	tcpSuccessRate := float64(tcpSuccessCount) / float64(totalIPs) * 100
+	fmt.Printf("TCP测试完成，成功率: %.2f%% (%d/%d)\n", tcpSuccessRate, tcpSuccessCount, totalIPs)
 
 	return cidrGroups
 }
 
 // 获取数据中心信息
 func getDataCenterInfo(ip string, locationMap map[string]location) (string, string, string) {
+	// 首先检查缓存
+	if data := globalCache.Get(nil, []byte(ip)); data != nil {
+		parts := strings.Split(string(data), "|")
+		if len(parts) == 3 {
+			return parts[0], parts[1], parts[2]
+		}
+	}
+
 	// 使用全局通道控制并发
 	ctx := context.Background()
 	if err := globalSem.Acquire(ctx, 1); err != nil {
@@ -1361,8 +1131,14 @@ func getDataCenterInfo(ip string, locationMap map[string]location) (string, stri
 		if dataCenter != "" {
 			loc, ok := locationMap[dataCenter]
 			if ok {
+				// 成功获取数据后立即缓存
+				cacheValue := fmt.Sprintf("%s|%s|%s", dataCenter, loc.Region, loc.City)
+				globalCache.Set([]byte(ip), []byte(cacheValue))
 				return dataCenter, loc.Region, loc.City
 			}
+			// 没有位置信息但有数据中心信息时也缓存
+			cacheValue := fmt.Sprintf("%s||", dataCenter)
+			globalCache.Set([]byte(ip), []byte(cacheValue))
 			return dataCenter, "", ""
 		}
 	}
