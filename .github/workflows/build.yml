@@ -52,10 +52,9 @@ jobs:
           go mod init cfspeed
           
           go get github.com/olekukonko/tablewriter
-          go get github.com/syndtr/goleveldb/leveldb
-          go get github.com/syndtr/goleveldb/leveldb/opt
-          go get github.com/syndtr/goleveldb/leveldb/util
-          go get github.com/panjf2000/ants/v2
+          go get github.com/VictoriaMetrics/fastcache
+          go get github.com/cheggaaa/pb/v3
+          go get golang.org/x/sync/semaphore
          
           go mod tidy
           
@@ -76,6 +75,7 @@ jobs:
             
             echo "构建 $OS $ARCH..."
             if [ "$OS" = "linux" ]; then
+              # 对 Linux 平台使用静态链接
               env GOOS=$OS GOARCH=$ARCH $EXTRA_FLAGS CGO_ENABLED=0 go build -ldflags="-s -w" -o "$NAME" cfspeed.go db_manager.go
             else
               env GOOS=$OS GOARCH=$ARCH $EXTRA_FLAGS go build -ldflags="-s -w" -o "$NAME" cfspeed.go db_manager.go
