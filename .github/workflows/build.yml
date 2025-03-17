@@ -76,9 +76,9 @@ jobs:
             echo "构建 $OS $ARCH..."
             if [ "$OS" = "linux" ]; then
               # 对 Linux 平台使用静态链接
-              env GOOS=$OS GOARCH=$ARCH $EXTRA_FLAGS CGO_ENABLED=0 go build -ldflags="-s -w" -o "$NAME" cfspeed.go db_manager.go
+              env GOOS=$OS GOARCH=$ARCH $EXTRA_FLAGS CGO_ENABLED=0 go build -ldflags="-s -w" -o "$NAME" cfspeed.go
             else
-              env GOOS=$OS GOARCH=$ARCH $EXTRA_FLAGS go build -ldflags="-s -w" -o "$NAME" cfspeed.go db_manager.go
+              env GOOS=$OS GOARCH=$ARCH $EXTRA_FLAGS go build -ldflags="-s -w" -o "$NAME" cfspeed.go
             fi
             
             upx --best --brute "$NAME" || true
@@ -94,13 +94,13 @@ jobs:
           build_and_compress linux arm
           
           # MIPS
-          env GOOS=linux GOARCH=mips GOMIPS=softfloat CGO_ENABLED=0 go build -ldflags="-s -w" -o cfspeed cfspeed.go db_manager.go
+          env GOOS=linux GOARCH=mips GOMIPS=softfloat CGO_ENABLED=0 go build -ldflags="-s -w" -o cfspeed cfspeed.go
           upx --best --brute cfspeed || true
           tar -czf build/cfspeed_linux_mips.tar.gz cfspeed
           cp cfspeed binaries/cfspeed_linux_mips
           rm cfspeed
           
-          env GOOS=linux GOARCH=mipsle GOMIPS=softfloat CGO_ENABLED=0 go build -ldflags="-s -w" -o cfspeed cfspeed.go db_manager.go
+          env GOOS=linux GOARCH=mipsle GOMIPS=softfloat CGO_ENABLED=0 go build -ldflags="-s -w" -o cfspeed cfspeed.go
           upx --best --brute cfspeed || true
           tar -czf build/cfspeed_linux_mipsle.tar.gz cfspeed
           cp cfspeed binaries/cfspeed_linux_mipsle
