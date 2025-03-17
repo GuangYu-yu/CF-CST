@@ -15,6 +15,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,22 +24,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"bytes"
-	"encoding/gob"
-
+	"github.com/VictoriaMetrics/fastcache"
 	"github.com/olekukonko/tablewriter"
-	"github.com/panjf2000/ants/v2"
-	"github.com/syndtr/goleveldb/leveldb"
-	"github.com/syndtr/goleveldb/leveldb/opt"
-	"github.com/syndtr/goleveldb/leveldb/util"
+	"golang.org/x/sync/semaphore"
+	"golang.org/x/term"
 )
 
 // ----------------------- 数据类型定义 -----------------------
-
-const (
-	keyPrefixIP  = "ip:"  // IP列表的键前缀
-	keyPrefixCSV = "csv:" // CSV数据的键前缀
-)
 
 type TestResult struct {
 	IP         string
@@ -49,10 +42,20 @@ type TestResult struct {
 	LossRate   float64
 }
 
+func (r *TestResult) Clear() {
+	r.IP = ""
+	r.CIDR = ""
+	r.DataCenter = ""
+	r.Region = ""
+	r.City = ""
+	r.AvgLatency = 0
+	r.LossRate = 0
+}
+
 type coloInfo struct {
-	dataCenter string
-	region     string
-	city       string
+	DataCenter string `json:"dataCenter"`
+	Region     string `json:"region"`
+	City       string `json:"city"`
 }
 
 type CIDRGroup struct {
@@ -78,10 +81,30 @@ type location struct {
 // ----------------------- 主程序入口 -----------------------
 
 var (
-	workerPool *ants.Pool
+	globalSem *semaphore.Weighted
 )
 
+var (
+	// TCP 测试结果缓存
+	tcpResultCache *fastcache.Cache
+	// 数据中心信息缓存
+	cidrColoCache *fastcache.Cache
+	// 缓存互斥锁
+	cacheMapMutex sync.RWMutex
+)
+
+// 内存管理辅助函数
+func freeMemory() {
+	runtime.GC()
+	debug.FreeOSMemory()
+}
+
 func main() {
+
+	// 初始化缓存
+	tcpResultCache = fastcache.New(64 * 1024 * 1024) // 64MB TCP测试结果缓存
+	cidrColoCache = fastcache.New(32 * 1024 * 1024)  // 32MB 数据中心信息缓存
+
 	// 添加全局超时控制
 	globalTimeout := 120 * time.Minute // 设置全局超时时间
 	ctx, cancel := context.WithTimeout(context.Background(), globalTimeout)
@@ -138,20 +161,9 @@ func runMainProgram() {
 		*scanThreads = 1024
 	}
 
-	// 初始化工作池
-	var err error
-	workerPool, err = ants.NewPool(*scanThreads)
-	if err != nil {
-		fmt.Printf("创建工作池失败: %v\n", err)
-		return
-	}
-	defer workerPool.Release()
-
-	// 清理旧的数据库文件
-	if err := os.RemoveAll("cfspeed.db"); err != nil {
-		fmt.Printf("清理数据库文件失败: %v\n", err)
-		// 继续执行，因为可能是文件不存在
-	}
+	// 使用统一的并发控制
+	maxConcurrent := *scanThreads
+	globalSem = semaphore.NewWeighted(int64(maxConcurrent))
 
 	// 显示帮助信息
 	if *help {
@@ -174,6 +186,7 @@ func runMainProgram() {
 
 	// 获取CIDR列表
 	var cidrList []string
+	var err error
 
 	if *urlFlag != "" {
 		fmt.Printf("从URL获取CIDR列表: %s\n", *urlFlag)
@@ -403,14 +416,16 @@ func getCIDRFromURL(url string) ([]string, error) {
 		resp, err := client.Get(url)
 		if err != nil {
 			lastErr = err
-			fmt.Printf("获取失败: %v，准备重试...\n", err)
+			// 只显示重试提示，不显示具体错误
+			fmt.Println("获取失败，准备重试...")
 			continue
 		}
 
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("HTTP请求失败，状态码: %d", resp.StatusCode)
-			fmt.Printf("%v，准备重试...\n", lastErr)
+			// 只显示重试提示，不显示具体错误
+			fmt.Println("获取失败，准备重试...")
 			continue
 		}
 
@@ -420,7 +435,8 @@ func getCIDRFromURL(url string) ([]string, error) {
 
 		if err != nil {
 			lastErr = err
-			fmt.Printf("解析CIDR列表失败: %v，准备重试...\n", err)
+			// 只显示重试提示，不显示具体错误
+			fmt.Println("解析失败，准备重试...")
 			continue
 		}
 
@@ -430,10 +446,12 @@ func getCIDRFromURL(url string) ([]string, error) {
 		}
 
 		lastErr = fmt.Errorf("获取到的CIDR列表为空")
-		fmt.Printf("%v，准备重试...\n", lastErr)
+		// 只显示重试提示，不显示具体错误
+		fmt.Println("获取结果为空，准备重试...")
 	}
 
-	return nil, fmt.Errorf("在%d次尝试后仍然失败: %v", maxRetries, lastErr)
+	// 修改这里，使用lastErr变量而不是创建新的错误
+	return nil, lastErr
 }
 
 // 从文件获取CIDR列表
@@ -621,20 +639,27 @@ func generateRandomIPs(cidrList []string, ipPerCIDR int) []CIDRGroup {
 	var mutex sync.Mutex
 	var wg sync.WaitGroup
 
+	// 使用全局信号量控制并发
 	for _, cidr := range cidrList {
 		wg.Add(1)
-		cidrCopy := cidr // 创建副本以在闭包中使用
-		if err := workerPool.Submit(func() {
+
+		go func(cidr string) {
 			defer wg.Done()
 
-			_, ipNet, err := net.ParseCIDR(cidrCopy)
+			// 使用全局信号量控制并发
+			if err := globalSem.Acquire(context.Background(), 1); err != nil {
+				return
+			}
+			defer globalSem.Release(1)
+
+			_, ipNet, err := net.ParseCIDR(cidr)
 			if err != nil {
 				return
 			}
 
 			// 创建新的CIDR组
 			group := CIDRGroup{
-				CIDR: cidrCopy,
+				CIDR: cidr,
 				IPs:  []string{},
 			}
 
@@ -662,10 +687,7 @@ func generateRandomIPs(cidrList []string, ipPerCIDR int) []CIDRGroup {
 				cidrGroups = append(cidrGroups, group)
 				mutex.Unlock()
 			}
-		}); err != nil {
-			fmt.Printf("提交任务失败: %v\n", err)
-			wg.Done()
-		}
+		}(cidr)
 	}
 
 	wg.Wait()
@@ -870,24 +892,33 @@ func getLocationMap() (map[string]location, error) {
 	return nil, fmt.Errorf("在%d次尝试后仍然失败: %v", maxRetries, lastErr)
 }
 
+// 时间格式化
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := d / time.Hour
+	d -= h * time.Hour
+	m := d / time.Minute
+	d -= m * time.Minute
+	s := d / time.Second
+
+	if h > 0 {
+		return fmt.Sprintf("%d时%d分%d秒", h, m, s)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%d分%d秒", m, s)
+	}
+	return fmt.Sprintf("%d秒", s)
+}
+
 // 测试IP性能
 func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMap map[string]location) []CIDRGroup {
-	// 获取数据库实例
-	dbManager := GetDBManager()
-	if err := dbManager.Open(); err != nil {
-		fmt.Printf("打开数据库失败: %v\n", err)
-		return cidrGroups
+	// 初始化并发控制
+	if globalSem == nil {
+		globalSem = semaphore.NewWeighted(int64(maxThreads))
 	}
-	defer dbManager.Close()
-
-	db := dbManager.GetDB()
 
 	var mutex sync.Mutex
 	var wg sync.WaitGroup
-
-	// 添加CIDR数据中心信息缓存
-	cidrColoCache := make(map[string]coloInfo)
-	var cacheMapMutex sync.RWMutex
 
 	// 计算总IP数量
 	var totalIPs int
@@ -902,34 +933,8 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 		tcpSuccessCount int32 // TCP测试成功数
 	)
 
-	// 启动进度更新协程
-	go func() {
-		startTime := time.Now()
-		for {
-			current := atomic.LoadInt32(&processedCount)
-			if current >= int32(totalIPs) {
-				break
-			}
-			elapsed := time.Since(startTime)
-			hours := int(elapsed.Hours())
-			minutes := int(elapsed.Minutes()) % 60
-			seconds := int(elapsed.Seconds()) % 60
-			percentage := float64(current) / float64(totalIPs) * 100
-
-			timeStr := ""
-			if hours > 0 {
-				timeStr = fmt.Sprintf("%d时%d分%d秒", hours, minutes, seconds)
-			} else if minutes > 0 {
-				timeStr = fmt.Sprintf("%d分%d秒", minutes, seconds)
-			} else {
-				timeStr = fmt.Sprintf("%d秒", seconds)
-			}
-
-			fmt.Printf("\r[延迟测试] %d/%d (%.2f%%) | 用时: %s",
-				current, totalIPs, percentage, timeStr)
-			time.Sleep(time.Millisecond * 50)
-		}
-	}()
+	// 添加开始时间记录
+	startTime := time.Now()
 
 	// 创建任务通道
 	type task struct {
@@ -943,118 +948,156 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 		group *CIDRGroup
 	}, 0, totalIPs) // 设置合理的初始容量
 
-	// 添加缓存清理函数
+	// 缓存清理函数
 	cleanCache := func() {
 		cacheMapMutex.Lock()
 		defer cacheMapMutex.Unlock()
-
-		// 如果缓存大小超过CIDR组数量的两倍，进行清理
-		if len(cidrColoCache) > len(cidrGroups)*2 {
-			newCache := make(map[string]coloInfo, len(cidrGroups))
-			// 只保留当前CIDR组的缓存
-			for _, group := range cidrGroups {
-				if info, exists := cidrColoCache[group.CIDR]; exists {
-					newCache[group.CIDR] = info
-				}
-			}
-			cidrColoCache = newCache
-		}
+		// 触发垃圾回收
+		freeMemory()
 	}
 
 	// 创建工作池
 	for i := 0; i < maxThreads; i++ {
-		if err := workerPool.Submit(func() {
-			// 为每个工作协程创建独立的批处理器
-			batch := new(leveldb.Batch)
-			batchSize := 0
-			const maxBatchSize = 1000
-
+		go func() {
 			for t := range tasks {
-				// TCP测试逻辑
-				localSuccessCount := 0
-				totalLatency := time.Duration(0)
-				minLatency := time.Duration(math.MaxInt64)
-				maxLatency := time.Duration(0)
+				// 首先检查 TCP 测试结果缓存
+				cacheKey := []byte("tcp:" + t.ip + ":" + strconv.Itoa(port) + ":" + strconv.Itoa(testCount))
+				cacheMapMutex.RLock()
+				cacheData := tcpResultCache.Get(nil, cacheKey)
+				cacheMapMutex.RUnlock()
 
-				for i := 0; i < testCount; i++ {
-					start := time.Now()
-					conn, err := net.DialTimeout("tcp", net.JoinHostPort(t.ip, strconv.Itoa(port)), time.Second)
-					if err != nil {
-						continue
-					}
-					latency := time.Since(start)
-					conn.Close()
+				var result TestResult
+				cacheHit := false
 
-					localSuccessCount++
-					totalLatency += latency
-					if latency < minLatency {
-						minLatency = latency
-					}
-					if latency > maxLatency {
-						maxLatency = latency
+				if len(cacheData) > 0 {
+					// 缓存命中，解析缓存数据
+					if err := json.Unmarshal(cacheData, &result); err == nil {
+						result.IP = t.ip
+						result.CIDR = t.group.CIDR
+
+						mutex.Lock()
+						t.group.Results = append(t.group.Results, result)
+						mutex.Unlock()
+
+						// 添加到数据中心查询队列
+						mutex.Lock()
+						pendingDataCenterQueries = append(pendingDataCenterQueries, struct {
+							ip    string
+							group *CIDRGroup
+						}{t.ip, t.group})
+						mutex.Unlock()
+
+						atomic.AddInt32(&tcpSuccessCount, 1)
+						cacheHit = true
 					}
 				}
 
-				if localSuccessCount > 0 {
-					avgLatency := totalLatency / time.Duration(localSuccessCount)
-					lossRate := float64(testCount-localSuccessCount) / float64(testCount)
+				if !cacheHit {
+					// TCP测试逻辑
+					localSuccessCount := 0
+					totalLatency := time.Duration(0)
+					minLatency := time.Duration(math.MaxInt64)
+					maxLatency := time.Duration(0)
 
-					mutex.Lock()
-					pendingDataCenterQueries = append(pendingDataCenterQueries, struct {
-						ip    string
-						group *CIDRGroup
-					}{t.ip, t.group})
-					mutex.Unlock()
+					for i := 0; i < testCount; i++ {
+						start := time.Now()
+						conn, err := net.DialTimeout("tcp", net.JoinHostPort(t.ip, strconv.Itoa(port)), time.Second)
+						if err != nil {
+							continue
+						}
+						latency := time.Since(start)
+						conn.Close()
 
-					result := TestResult{
-						IP:         t.ip,
-						CIDR:       t.group.CIDR,
-						AvgLatency: int(avgLatency.Milliseconds()),
-						LossRate:   lossRate,
-					}
-
-					// 数据库存储代码
-					var buf bytes.Buffer
-					enc := gob.NewEncoder(&buf)
-					if err := enc.Encode(result); err != nil {
-						fmt.Printf("序列化结果失败: %v\n", err)
-					} else {
-						batch.Put([]byte(result.IP), buf.Bytes())
-						batchSize++
-
-						if batchSize >= maxBatchSize {
-							if err := db.Write(batch, &opt.WriteOptions{Sync: false}); err != nil {
-								fmt.Printf("批量写入失败: %v\n", err)
-							}
-							batch.Reset()
-							batchSize = 0
+						localSuccessCount++
+						totalLatency += latency
+						if latency < minLatency {
+							minLatency = latency
+						}
+						if latency > maxLatency {
+							maxLatency = latency
 						}
 					}
 
-					mutex.Lock()
-					t.group.Results = append(t.group.Results, result)
-					mutex.Unlock()
+					if localSuccessCount > 0 {
+						avgLatency := totalLatency / time.Duration(localSuccessCount)
+						lossRate := float64(testCount-localSuccessCount) / float64(testCount)
 
-					atomic.AddInt32(&tcpSuccessCount, 1)
-				} else {
-					atomic.AddInt32(&tcpFailCount, 1)
+						mutex.Lock()
+						pendingDataCenterQueries = append(pendingDataCenterQueries, struct {
+							ip    string
+							group *CIDRGroup
+						}{t.ip, t.group})
+						mutex.Unlock()
+
+						result = TestResult{
+							IP:         t.ip,
+							CIDR:       t.group.CIDR,
+							AvgLatency: int(avgLatency.Milliseconds()),
+							LossRate:   lossRate,
+						}
+
+						// 将结果存入缓存
+						cacheMapMutex.Lock()
+						cacheData, _ := json.Marshal(TestResult{
+							AvgLatency: result.AvgLatency,
+							LossRate:   result.LossRate,
+						})
+						tcpResultCache.Set(cacheKey, cacheData)
+						cacheMapMutex.Unlock()
+
+						mutex.Lock()
+						t.group.Results = append(t.group.Results, result)
+						mutex.Unlock()
+
+						atomic.AddInt32(&tcpSuccessCount, 1)
+					} else {
+						atomic.AddInt32(&tcpFailCount, 1)
+					}
 				}
 
 				// 在工作池的处理循环中
-				atomic.AddInt32(&processedCount, 1)
+				current := atomic.AddInt32(&processedCount, 1)
+
+				// 添加刷新间隔控制
+				if current%5 == 0 || current == int32(totalIPs) {
+					elapsed := time.Since(startTime)
+
+					// 获取终端宽度并计算进度条宽度
+					termWidth, _, err := term.GetSize(int(os.Stdout.Fd()))
+					width := termWidth / 2
+					if err != nil || width < 20 {
+						width = 20 // 如果获取失败或宽度太小，使用最小值
+					}
+
+					// 先清除当前行
+					fmt.Print("\033[2K") // 清除整行
+
+					// 构建完整的进度信息字符串
+					var progressInfo strings.Builder
+					fmt.Fprintf(&progressInfo, "\r%d/%d [", current, totalIPs)
+
+					// 打印进度条
+					progress := float64(current) / float64(totalIPs)
+					pos := int(progress * float64(width))
+
+					for i := 0; i < width; i++ {
+						if i < pos {
+							progressInfo.WriteString("█")
+						} else {
+							progressInfo.WriteString("░")
+						}
+					}
+
+					// 只添加时间信息
+					fmt.Fprintf(&progressInfo, "] %s", formatDuration(elapsed))
+
+					// 一次性输出整个字符串
+					fmt.Print(progressInfo.String())
+				}
 
 				wg.Done()
 			}
-
-			// 确保最后的批处理数据被写入
-			if batchSize > 0 {
-				if err := db.Write(batch, &opt.WriteOptions{Sync: false}); err != nil {
-					fmt.Printf("最终批量写入失败: %v\n", err)
-				}
-			}
-		}); err != nil {
-			fmt.Printf("提交任务失败: %v\n", err)
-		}
+		}()
 	}
 
 	// 分发任务
@@ -1082,88 +1125,140 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 	var dcSuccessCount int32
 	totalQueries := len(pendingDataCenterQueries)
 
-	// 启动进度更新协程
-	go func() {
-		startTime := time.Now()
-		for {
-			current := atomic.LoadInt32(&dcQueryCount)
-			if current >= int32(totalQueries) {
-				break
-			}
-			elapsed := time.Since(startTime)
-			hours := int(elapsed.Hours())
-			minutes := int(elapsed.Minutes()) % 60
-			seconds := int(elapsed.Seconds()) % 60
-			percentage := float64(current) / float64(totalQueries) * 100
+	// 添加进度显示控制
+	var progressMutex sync.Mutex
+	var lastProgress int32
 
-			timeStr := ""
-			if hours > 0 {
-				timeStr = fmt.Sprintf("%d时%d分%d秒", hours, minutes, seconds)
-			} else if minutes > 0 {
-				timeStr = fmt.Sprintf("%d分%d秒", minutes, seconds)
-			} else {
-				timeStr = fmt.Sprintf("%d秒", seconds)
-			}
+	// 使用批处理方式处理数据中心查询
+	batchSize := maxThreads * 2                  // 每批处理的查询数量
+	totalQueries = len(pendingDataCenterQueries) // 保存总查询数量
 
-			fmt.Printf("\r[查询进度] %d/%d (%.2f%%) | 用时: %s",
-				current, totalQueries, percentage, timeStr)
-			time.Sleep(time.Millisecond * 50)
+	// 创建一个副本或使用索引而不是修改原数组
+	queriesCopy := make([]struct {
+		ip    string
+		group *CIDRGroup
+	}, len(pendingDataCenterQueries))
+	copy(queriesCopy, pendingDataCenterQueries)
+
+	for i := 0; i < len(pendingDataCenterQueries); i += batchSize {
+		end := i + batchSize
+		if end > len(pendingDataCenterQueries) {
+			end = len(pendingDataCenterQueries)
 		}
-	}()
 
-	for _, query := range pendingDataCenterQueries {
-		dcWg.Add(1)
-		go func(ip string, group *CIDRGroup) {
-			defer dcWg.Done()
+		// 处理当前批次
+		for j := i; j < end; j++ {
+			query := queriesCopy[j]
+			dcWg.Add(1)
+			go func(ip string, group *CIDRGroup) {
+				defer dcWg.Done()
 
-			// 使用通道控制并发
-			dcTasks <- struct{}{}
-			defer func() { <-dcTasks }()
+				// 使用通道控制并发
+				dcTasks <- struct{}{}
+				defer func() { <-dcTasks }()
 
-			atomic.AddInt32(&dcQueryCount, 1)
+				current := atomic.AddInt32(&dcQueryCount, 1)
 
-			// 先检查缓存
-			var dataCenter, region, city string
-			cacheMapMutex.RLock()
-			if cache, ok := cidrColoCache[group.CIDR]; ok && cache.dataCenter != "Unknown" {
-				dataCenter = cache.dataCenter
-				region = cache.region
-				city = cache.city
-				atomic.AddInt32(&dcSuccessCount, 1) // 缓存命中也算成功
-			}
-			cacheMapMutex.RUnlock()
+				// 确保进度只增不减
+				progressMutex.Lock()
+				if current > lastProgress {
+					lastProgress = current
+					if current%5 == 0 || current == int32(totalQueries) {
+						// 计算进度
+						var progress float64 = float64(current) / float64(totalQueries)
 
-			// 如果缓存中没有，则查询
-			if dataCenter == "" {
-				dataCenter, region, city = getDataCenterInfo(ip, locationMap)
+						// 获取终端宽度并计算进度条宽度
+						termWidth, _, err := term.GetSize(int(os.Stdout.Fd()))
+						width := termWidth / 2
+						if err != nil || width < 20 {
+							width = 20 // 如果获取失败或宽度太小，使用最小值
+						}
 
-				if dataCenter != "Unknown" {
-					atomic.AddInt32(&dcSuccessCount, 1) // 查询成功
-					cacheMapMutex.Lock()
-					cidrColoCache[group.CIDR] = coloInfo{
-						dataCenter: dataCenter,
-						region:     region,
-						city:       city,
+						// 先清除当前行
+						fmt.Print("\033[2K") // 清除整行
+
+						// 构建完整的进度信息字符串
+						var progressInfo strings.Builder
+						fmt.Fprintf(&progressInfo, "\r%d/%d [", current, totalQueries)
+
+						pos := int(progress * float64(width))
+						for i := 0; i < width; i++ {
+							if i < pos {
+								progressInfo.WriteString("█")
+							} else {
+								progressInfo.WriteString("░")
+							}
+						}
+
+						// 添加百分比
+						fmt.Fprintf(&progressInfo, "] %.2f%%", progress*100)
+
+						// 一次性输出整个字符串
+						fmt.Print(progressInfo.String())
 					}
-					cacheMapMutex.Unlock()
 				}
-			}
+				progressMutex.Unlock()
 
-			// 更新测试结果
-			mutex.Lock()
-			for i := range group.Results {
-				if group.Results[i].IP == ip {
-					group.Results[i].DataCenter = dataCenter
-					group.Results[i].Region = region
-					group.Results[i].City = city
-					break
+				// 先检查缓存 - 修改缓存键设计，使用 IP 而不是 CIDR
+				var dataCenter, region, city string
+				cacheMapMutex.RLock()
+				// 使用 IP 作为缓存键，而不是 CIDR
+				cacheKey := []byte("dc:" + ip)
+				cacheData := cidrColoCache.Get(nil, cacheKey)
+				if len(cacheData) > 0 {
+					// 解析缓存数据
+					var info coloInfo
+					if err := json.Unmarshal(cacheData, &info); err == nil {
+						dataCenter = info.DataCenter
+						region = info.Region
+						city = info.City
+						if dataCenter != "Unknown" {
+							atomic.AddInt32(&dcSuccessCount, 1) // 缓存命中也算成功
+						}
+					}
 				}
-			}
-			mutex.Unlock()
-		}(query.ip, query.group)
+				cacheMapMutex.RUnlock()
+
+				// 如果缓存中没有，则查询
+				if dataCenter == "" {
+					dataCenter, region, city = getDataCenterInfo(ip, locationMap)
+
+					if dataCenter != "Unknown" {
+						atomic.AddInt32(&dcSuccessCount, 1) // 查询成功
+						// 使用 IP 作为缓存键存储
+						cacheMapMutex.Lock()
+						cacheData, _ := json.Marshal(coloInfo{
+							DataCenter: dataCenter,
+							Region:     region,
+							City:       city,
+						})
+						cidrColoCache.Set(cacheKey, cacheData)
+						cacheMapMutex.Unlock()
+					}
+				}
+
+				// 更新测试结果
+				mutex.Lock()
+				for i := range group.Results {
+					if group.Results[i].IP == ip {
+						group.Results[i].DataCenter = dataCenter
+						group.Results[i].Region = region
+						group.Results[i].City = city
+						break
+					}
+				}
+				mutex.Unlock()
+			}(query.ip, query.group)
+		}
+
+		// 等待当前批次完成
+		dcWg.Wait()
+
+		// 每批处理完成后主动清理内存
+		runtime.GC()
+		debug.FreeOSMemory()
 	}
 
-	dcWg.Wait()
 	cleanCache()  // 清理不再需要的缓存
 	fmt.Println() // 添加换行，避免最后的进度显示被覆盖
 	// 计算数据中心查询成功率
@@ -1194,25 +1289,41 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 		group.LossRate = totalLossRate / float64(len(group.Results))
 	}
 
+	// 清理缓存
+	cleanCache()
+
 	return cidrGroups
 }
 
 // 获取数据中心信息
 func getDataCenterInfo(ip string, locationMap map[string]location) (string, string, string) {
+	// 使用全局通道控制并发
+	ctx := context.Background()
+	if err := globalSem.Acquire(ctx, 1); err != nil {
+		return "Unknown", "", ""
+	}
+	defer globalSem.Release(1)
 
-	maxRetries := 5
+	maxRetries := 3 // 减少重试次数
+
+	// 使用共享的 Transport 对象
 	transport := &http.Transport{
 		DisableKeepAlives: true,
-		IdleConnTimeout:   1 * time.Second,
+		IdleConnTimeout:   1000 * time.Millisecond, // 减少超时时间
+		MaxIdleConns:      100,
+		MaxConnsPerHost:   10,
 	}
 
 	client := &http.Client{
-		Timeout:   1 * time.Second,
+		Timeout:   800 * time.Millisecond, // 减少超时时间
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
+
+	// 确保资源被释放
+	defer transport.CloseIdleConnections()
 
 	for retry := 0; retry <= maxRetries; retry++ {
 		hostIP := ip
@@ -1261,18 +1372,6 @@ func getDataCenterInfo(ip string, locationMap map[string]location) (string, stri
 
 // 生成IP文件
 func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) error {
-	// 获取数据库实例
-	dbManager := GetDBManager()
-	if err := dbManager.Open(); err != nil {
-		return err
-	}
-	defer dbManager.Close()
-
-	db := dbManager.GetDB()
-	batch := new(leveldb.Batch)
-	batchSize := 0
-	const maxBatchSize = 1000
-
 	// 检查是否至少指定了一种IP类型
 	if ipv4Mode == "" && ipv6Mode == "" {
 		return fmt.Errorf("必须至少指定 -useip4 或 -useip6 参数")
@@ -1528,42 +1627,13 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 	}
 	defer file.Close()
 
+	writer := bufio.NewWriter(file)
 	for _, ip := range ipList {
-		key := fmt.Sprintf("%s%s", keyPrefixIP, ip)
-		batch.Put([]byte(key), []byte(ip))
-		batchSize++
-
-		if batchSize >= maxBatchSize {
-			if err := db.Write(batch, nil); err != nil {
-				return err
-			}
-			batch.Reset()
-			batchSize = 0
-		}
-	}
-
-	// 最后一次批量写入
-	if batchSize > 0 {
-		if err := db.Write(batch, nil); err != nil {
+		_, err := writer.WriteString(ip + "\n")
+		if err != nil {
 			return err
 		}
 	}
-
-	// 从数据库读取并写入文件
-	file, err = os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	writer := bufio.NewWriter(file)
-	iter := db.NewIterator(util.BytesPrefix([]byte(keyPrefixIP)), nil)
-	defer iter.Release()
-
-	for iter.Next() {
-		writer.WriteString(string(iter.Value()) + "\n")
-	}
-
 	return writer.Flush()
 }
 
@@ -1618,53 +1688,6 @@ func filterResults(results []TestResult, coloFilter string, minLatency, maxLaten
 
 // 写入结果到CSV
 func writeResultsToCSV(results []TestResult, filename string) error {
-	// 获取数据库实例
-	dbManager := GetDBManager()
-	if err := dbManager.Open(); err != nil {
-		return err
-	}
-	defer dbManager.Close()
-
-	db := dbManager.GetDB()
-	batch := new(leveldb.Batch)
-	batchSize := 0
-	const maxBatchSize = 1000
-
-	// 写入标题行
-	headerKey := fmt.Sprintf("%sheader", keyPrefixCSV)
-	batch.Put([]byte(headerKey), []byte("CIDR,数据中心,地区,城市,平均延迟(ms),丢包率(%)"))
-
-	// 写入结果
-	for i, result := range results {
-		key := fmt.Sprintf("%s%d", keyPrefixCSV, i)
-		value := fmt.Sprintf("%s,%s,%s,%s,%d,%.2f",
-			result.CIDR,
-			result.DataCenter,
-			result.Region,
-			result.City,
-			result.AvgLatency,
-			result.LossRate*100)
-
-		batch.Put([]byte(key), []byte(value))
-		batchSize++
-
-		if batchSize >= maxBatchSize {
-			if err := db.Write(batch, nil); err != nil {
-				return err
-			}
-			batch.Reset()
-			batchSize = 0
-		}
-	}
-
-	// 最后一次批量写入
-	if batchSize > 0 {
-		if err := db.Write(batch, nil); err != nil {
-			return err
-		}
-	}
-
-	// 从数据库读取并写入文件
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -1675,20 +1698,27 @@ func writeResultsToCSV(results []TestResult, filename string) error {
 	defer writer.Flush()
 
 	// 写入标题行
-	headerData, err := db.Get([]byte(headerKey), nil)
-	if err == nil {
-		writer.Write(strings.Split(string(headerData), ","))
+	err = writer.Write([]string{"CIDR", "数据中心", "地区", "城市", "平均延迟(ms)", "丢包率(%)"})
+	if err != nil {
+		return err
 	}
 
 	// 写入数据行
-	iter := db.NewIterator(util.BytesPrefix([]byte(keyPrefixCSV)), nil)
-	defer iter.Release()
-
-	for iter.Next() {
-		if string(iter.Key()) == headerKey {
-			continue
+	for _, result := range results {
+		// 直接使用原始CIDR，不尝试转换
+		row := []string{
+			result.CIDR,
+			result.DataCenter,
+			result.Region,
+			result.City,
+			fmt.Sprintf("%d", result.AvgLatency), // 直接使用 int 值
+			fmt.Sprintf("%.1f", result.LossRate*100),
 		}
-		writer.Write(strings.Split(string(iter.Value()), ","))
+
+		err = writer.Write(row)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
