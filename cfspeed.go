@@ -21,7 +21,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/VictoriaMetrics/fastcache"
 	"github.com/cheggaaa/pb/v3"
 	"github.com/olekukonko/tablewriter"
 	"golang.org/x/sync/semaphore"
@@ -72,20 +71,45 @@ type location struct {
 // ----------------------- 主程序入口 -----------------------
 
 var (
-	globalSem   *semaphore.Weighted
-	globalCache *fastcache.Cache
+	globalSem *semaphore.Weighted
 )
 
-var resultPool = sync.Pool{
-	New: func() interface{} {
-		return &TestResult{}
-	},
+// shouldIncludeResult 检查结果是否符合过滤条件
+func shouldIncludeResult(result TestResult, coloFlag *string, minLatency, maxLatency *int, maxLossRate *float64, showAll *bool) bool {
+	// 如果不显示所有结果，则跳过未知数据中心的结果
+	if !*showAll && result.DataCenter == "Unknown" {
+		return false
+	}
+
+	// 检查数据中心
+	if *coloFlag != "" {
+		coloList := strings.Split(*coloFlag, ",")
+		match := false
+		for _, colo := range coloList {
+			if result.DataCenter == strings.TrimSpace(colo) {
+				match = true
+				break
+			}
+		}
+		if !match {
+			return false
+		}
+	}
+
+	// 检查延迟
+	if result.AvgLatency < *minLatency || result.AvgLatency > *maxLatency {
+		return false
+	}
+
+	// 检查丢包率
+	if result.LossRate > *maxLossRate {
+		return false
+	}
+
+	return true
 }
 
 func main() {
-	// 初始化缓存，设置最大大小为 8MB
-	globalCache = fastcache.New(8 * 1024 * 1024)
-	defer globalCache.Reset()
 
 	// 添加全局超时控制
 	globalTimeout := 120 * time.Minute // 设置全局超时时间
@@ -220,69 +244,29 @@ func runMainProgram() {
 	}
 
 	// 从每个CIDR中随机选择IP进行测试
-	cidrGroups := generateRandomIPs(expandedCIDRs, *ipPerCIDR)
-	fmt.Printf("共生成 %d 个CIDR组，每组 %d 个IP\n", len(cidrGroups), *ipPerCIDR)
-
-	// 测试IP性能
-	cidrGroups = testIPs(cidrGroups, *portFlag, *testCount, *scanThreads, locationMap)
-
-	// 将测试结果按CIDR分组
-	cidrResultMap := make(map[string][]TestResult)
-	var cidrMapMutex sync.Mutex // 添加互斥锁保护map访问
-
-	for _, group := range cidrGroups {
-		if len(group.Results) == 0 {
-			continue
-		}
-
-		// 使用CIDR作为键，收集所有相同CIDR的测试结果
-		for _, result := range group.Results {
-			cidrMapMutex.Lock() // 加锁保护map写入
-			cidrResultMap[result.CIDR] = append(cidrResultMap[result.CIDR], result)
-			cidrMapMutex.Unlock() // 解锁
+	cidrGroups := make([]CIDRGroup, len(expandedCIDRs))
+	for i, cidr := range expandedCIDRs {
+		cidrGroups[i] = CIDRGroup{
+			CIDR: cidr,
 		}
 	}
 
-	// 合并每个CIDR的结果
-	var results []TestResult
-	for cidr, cidrResults := range cidrResultMap {
-		// 计算平均值
-		var totalLatency int
-		var totalLossRate float64
-		var dataCenter, region, city string
+	// 不再需要提前生成所有IP
+	fmt.Printf("共有 %d 个CIDR组\n", len(cidrGroups))
 
-		for _, result := range cidrResults {
-			totalLatency += result.AvgLatency
-			totalLossRate += result.LossRate
+	// 测试IP性能
+	cidrGroups = testIPs(cidrGroups, *portFlag, *testCount, *scanThreads, *ipPerCIDR, locationMap,
+		coloFlag, minLatency, maxLatency, maxLossRate, showAll)
 
-			// 使用第一个有效的数据中心信息
-			if dataCenter == "" {
-				dataCenter = result.DataCenter
-				if dataCenter == "" {
-					dataCenter = "Unknown"
-				}
-				region = result.Region
-				city = result.City
-			}
+	// 收集已合并的结果
+	var filteredResults []TestResult
+	for _, group := range cidrGroups {
+		if len(group.Results) > 0 {
+			filteredResults = append(filteredResults, group.Results[0])
 		}
-
-		avgLatency := totalLatency / len(cidrResults)
-		avgLossRate := totalLossRate / float64(len(cidrResults))
-
-		// 创建合并后的结果
-		results = append(results, TestResult{
-			IP:         cidrResults[0].IP, // 使用第一个IP作为代表
-			CIDR:       cidr,
-			DataCenter: dataCenter,
-			Region:     region,
-			City:       city,
-			AvgLatency: avgLatency,
-			LossRate:   avgLossRate,
-		})
 	}
 
 	// 过滤结果
-	filteredResults := filterResults(results, *coloFlag, *minLatency, *maxLatency, *maxLossRate, *showAll)
 	fmt.Printf("符合条件的结果: %d 个\n", len(filteredResults))
 
 	// 排序结果
@@ -614,74 +598,6 @@ func expandIPv6CIDR(ipNet *net.IPNet, ones int) []string {
 	return result
 }
 
-// 从每个CIDR中随机生成IP
-func generateRandomIPs(cidrList []string, ipPerCIDR int) []CIDRGroup {
-	rand.Seed(time.Now().UnixNano())
-	var cidrGroups []CIDRGroup
-	var mutex sync.Mutex
-	var wg sync.WaitGroup
-
-	// 使用全局信号量控制并发
-	for _, cidr := range cidrList {
-		wg.Add(1)
-
-		go func(cidr string) {
-			defer wg.Done()
-
-			// 使用全局信号量控制并发
-			if err := globalSem.Acquire(context.Background(), 1); err != nil {
-				return
-			}
-			defer globalSem.Release(1)
-
-			_, ipNet, err := net.ParseCIDR(cidr)
-			if err != nil {
-				return
-			}
-
-			// 创建新的CIDR组
-			group := CIDRGroup{
-				CIDR: cidr,
-				IPs:  []string{},
-			}
-
-			// 判断是IPv4还是IPv6
-			if ipNet.IP.To4() != nil {
-				// IPv4
-				for i := 0; i < ipPerCIDR; i++ {
-					ip := generateRandomIPv4(ipNet)
-					if ip != "" {
-						group.IPs = append(group.IPs, ip)
-					}
-				}
-			} else {
-				// IPv6
-				for i := 0; i < ipPerCIDR; i++ {
-					ip := generateRandomIPv6(ipNet)
-					if ip != "" {
-						group.IPs = append(group.IPs, ip)
-					}
-				}
-			}
-
-			if len(group.IPs) > 0 {
-				mutex.Lock()
-				cidrGroups = append(cidrGroups, group)
-				mutex.Unlock()
-			}
-		}(cidr)
-	}
-
-	wg.Wait()
-	return cidrGroups
-}
-
-// 生成随机IPv4地址
-func generateRandomIPv4(ipNet *net.IPNet) string {
-	// 调用通用的IPv4地址生成函数
-	return generateRandomIPv4Address(ipNet)
-}
-
 // 通用的IPv4地址生成函数 - 新增函数
 func generateRandomIPv4Address(ipNet *net.IPNet) string {
 	// 获取网络地址和掩码
@@ -729,12 +645,6 @@ func generateRandomIPv4Address(ipNet *net.IPNet) string {
 	)
 
 	return result.String()
-}
-
-// 生成随机IPv6地址
-func generateRandomIPv6(ipNet *net.IPNet) string {
-	// 调用通用的IPv6地址生成函数
-	return generateRandomIPv6Address(ipNet)
 }
 
 // 通用的IPv6地址生成函数 - 新增函数
@@ -893,7 +803,8 @@ func formatDuration(d time.Duration) string {
 }
 
 // 测试IP性能
-func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMap map[string]location) []CIDRGroup {
+func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int, locationMap map[string]location,
+	coloFlag *string, minLatency, maxLatency *int, maxLossRate *float64, showAll *bool) []CIDRGroup {
 	// 初始化并发控制
 	if globalSem == nil {
 		globalSem = semaphore.NewWeighted(int64(maxThreads))
@@ -902,11 +813,26 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 	var mutex sync.Mutex
 	var wg sync.WaitGroup
 
-	// 计算总IP数量
-	totalIPs := 0
+	resultChan := make(chan TestResult, maxThreads)
+
+	// CIDR 完成计数器
+	cidrIPCounts := make(map[string]struct {
+		total   int
+		current int
+	})
+
+	// 初始化每个 CIDR 的计数
 	for _, group := range cidrGroups {
-		totalIPs += len(group.IPs)
+		cidrIPCounts[group.CIDR] = struct {
+			total   int
+			current int
+		}{
+			total: ipPerCIDR,
+		}
 	}
+
+	// 计算总IP数量
+	totalIPs := len(cidrGroups) * ipPerCIDR
 
 	// CIDR数据中心信息缓存
 	type cidrCache struct {
@@ -927,7 +853,6 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 	var (
 		processedCount  int32
 		tcpSuccessCount int32
-		tcpFailCount    int32
 	)
 
 	startTime := time.Now()
@@ -939,44 +864,111 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 	bar.Set("current", "0")
 	bar.Start()
 	defer bar.Finish()
+
+	// 启动结果处理协程
+	go func() {
+		defer close(resultChan)
+		for result := range resultChan {
+			mutex.Lock()
+
+			// 使用传入的参数进行过滤
+			if !shouldIncludeResult(result, coloFlag, minLatency, maxLatency, maxLossRate, showAll) {
+				mutex.Unlock()
+				continue
+			}
+
+			// 更新计数
+			counts := cidrIPCounts[result.CIDR]
+			counts.current++
+			cidrIPCounts[result.CIDR] = counts
+
+			// 添加结果到临时存储
+			for i := range cidrGroups {
+				if cidrGroups[i].CIDR == result.CIDR {
+					cidrGroups[i].Results = append(cidrGroups[i].Results, result)
+
+					// 如果该 CIDR 的所有 IP 都已测试完成
+					if counts.current == counts.total {
+						// 计算平均值
+						var totalLatency int
+						var totalLossRate float64
+						results := cidrGroups[i].Results
+
+						for _, r := range results {
+							totalLatency += r.AvgLatency
+							totalLossRate += r.LossRate
+						}
+
+						// 创建平均结果
+						avgResult := TestResult{
+							CIDR:       result.CIDR,
+							DataCenter: results[0].DataCenter,
+							Region:     results[0].Region,
+							City:       results[0].City,
+							AvgLatency: totalLatency / len(results),
+							LossRate:   totalLossRate / float64(len(results)),
+						}
+
+						// 用平均结果替换详细结果，释放内存
+						cidrGroups[i].Results = []TestResult{avgResult}
+					}
+					break
+				}
+			}
+			mutex.Unlock()
+		}
+	}()
+
 	// 创建工作池
 	for i := 0; i < maxThreads; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-
 			for {
-				// 获取下一个要处理的IP任务
-				var currentIP string
-				var currentGroup *CIDRGroup
-
+				// 获取一个未完成的CIDR
 				mutex.Lock()
+				var currentGroup *CIDRGroup
 				for i := range cidrGroups {
-					if len(cidrGroups[i].IPs) > 0 {
+					counts := cidrIPCounts[cidrGroups[i].CIDR]
+					if counts.current < counts.total {
 						currentGroup = &cidrGroups[i]
-						currentIP = currentGroup.IPs[0]
-						currentGroup.IPs = currentGroup.IPs[1:]
+						counts.current++ // 提前增加计数
+						cidrIPCounts[cidrGroups[i].CIDR] = counts
 						break
 					}
 				}
+				if currentGroup == nil {
+					mutex.Unlock()
+					return // 所有CIDR都已处理完成
+				}
 				mutex.Unlock()
 
-				if currentIP == "" {
-					return // 所有IP已处理完毕
+				// 生成并测试一个IP
+				_, ipNet, err := net.ParseCIDR(currentGroup.CIDR)
+				if err != nil {
+					continue
 				}
 
-				// 从对象池获取对象
-				result := resultPool.Get().(*TestResult)
-				result.Clear() // 清理复用对象的旧数据
-				result.IP = currentIP
-				result.CIDR = currentGroup.CIDR
+				// 生成随机IP
+				var ip string
+				if ipNet.IP.To4() != nil {
+					ip = generateRandomIPv4Address(ipNet)
+				} else {
+					ip = generateRandomIPv6Address(ipNet)
+				}
+
+				// 创建测试结果
+				result := TestResult{
+					IP:   ip,
+					CIDR: currentGroup.CIDR,
+				}
 
 				// 执行TCP测试
 				localSuccessCount := 0
 				totalLatency := time.Duration(0)
 				for i := 0; i < testCount; i++ {
 					start := time.Now()
-					conn, err := net.DialTimeout("tcp", net.JoinHostPort(currentIP, strconv.Itoa(port)), time.Second)
+					conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), time.Second)
 					if err != nil {
 						continue
 					}
@@ -1003,7 +995,7 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 						cache.RUnlock()
 					} else {
 						cache.RUnlock()
-						dataCenter, region, city := getDataCenterInfo(currentIP, locationMap)
+						dataCenter, region, city := getDataCenterInfo(ip, locationMap)
 						if dataCenter != "Unknown" {
 							cache.Lock()
 							if !cache.found {
@@ -1019,17 +1011,9 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 						result.City = city
 					}
 
-					mutex.Lock()
-					currentGroup.Results = append(currentGroup.Results, *result)
-					mutex.Unlock()
-
-					// 将对象放回池中
-					resultPool.Put(result)
+					// 发送结果到结果通道
+					resultChan <- result
 					atomic.AddInt32(&tcpSuccessCount, 1)
-				} else {
-					// 测试失败也要放回池中
-					resultPool.Put(result)
-					atomic.AddInt32(&tcpFailCount, 1)
 				}
 
 				// 更新进度
@@ -1042,13 +1026,8 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 		}()
 	}
 
+	// 等待所有工作完成
 	wg.Wait()
-	fmt.Println()
-
-	// 清理已处理的IP列表
-	for i := range cidrGroups {
-		cidrGroups[i].IPs = nil
-	}
 
 	// 计算TCP测试成功率
 	tcpSuccessRate := float64(tcpSuccessCount) / float64(totalIPs) * 100
@@ -1059,13 +1038,6 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads int, locationMa
 
 // 获取数据中心信息
 func getDataCenterInfo(ip string, locationMap map[string]location) (string, string, string) {
-	// 首先检查缓存
-	if data := globalCache.Get(nil, []byte(ip)); data != nil {
-		parts := strings.Split(string(data), "|")
-		if len(parts) == 3 {
-			return parts[0], parts[1], parts[2]
-		}
-	}
 
 	// 使用全局通道控制并发
 	ctx := context.Background()
@@ -1131,14 +1103,8 @@ func getDataCenterInfo(ip string, locationMap map[string]location) (string, stri
 		if dataCenter != "" {
 			loc, ok := locationMap[dataCenter]
 			if ok {
-				// 成功获取数据后立即缓存
-				cacheValue := fmt.Sprintf("%s|%s|%s", dataCenter, loc.Region, loc.City)
-				globalCache.Set([]byte(ip), []byte(cacheValue))
 				return dataCenter, loc.Region, loc.City
 			}
-			// 没有位置信息但有数据中心信息时也缓存
-			cacheValue := fmt.Sprintf("%s||", dataCenter)
-			globalCache.Set([]byte(ip), []byte(cacheValue))
 			return dataCenter, "", ""
 		}
 	}
@@ -1154,7 +1120,6 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 	}
 
 	var ipList []string
-	ipMap := make(map[string]bool) // 用于去重
 
 	// 检查是否有IPv4和IPv6的CIDR
 	hasIPv4CIDR := false
@@ -1222,9 +1187,8 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 					}
 
 					ipStr := newIP.String()
-					if !ipMap[ipStr] {
+					if ipStr != "" {
 						ipList = append(ipList, ipStr)
-						ipMap[ipStr] = true
 						ipv4Count++
 					}
 				}
@@ -1292,9 +1256,8 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 				// 使用通用函数生成随机IPv4地址
 				ipStr := generateRandomIPv4Address(currentCIDR.ipNet)
 
-				if ipStr != "" && !ipMap[ipStr] {
+				if ipStr != "" {
 					ipList = append(ipList, ipStr)
-					ipMap[ipStr] = true
 					ipv4Count++
 				}
 
@@ -1380,9 +1343,8 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 				// 使用通用函数生成随机IPv6地址
 				ipStr := generateRandomIPv6Address(currentCIDR.ipNet)
 
-				if ipStr != "" && !ipMap[ipStr] {
+				if ipStr != "" {
 					ipList = append(ipList, ipStr)
-					ipMap[ipStr] = true
 					ipv6Count++
 				}
 
@@ -1411,55 +1373,6 @@ func generateIPFile(results []TestResult, ipv4Mode, ipv6Mode, filename string) e
 		}
 	}
 	return writer.Flush()
-}
-
-// 过滤结果
-func filterResults(results []TestResult, coloFilter string, minLatency, maxLatency int, maxLossRate float64, showAll bool) []TestResult {
-	var filtered []TestResult
-
-	// 解析数据中心过滤器
-	var coloList []string
-	if coloFilter != "" {
-		coloList = strings.Split(coloFilter, ",")
-		for i, colo := range coloList {
-			coloList[i] = strings.TrimSpace(colo)
-		}
-	}
-
-	for _, result := range results {
-		// 如果不显示所有结果，则跳过未知数据中心的结果
-		if !showAll && result.DataCenter == "Unknown" {
-			continue
-		}
-
-		// 检查数据中心
-		if len(coloList) > 0 {
-			match := false
-			for _, colo := range coloList {
-				if result.DataCenter == colo {
-					match = true
-					break
-				}
-			}
-			if !match {
-				continue
-			}
-		}
-
-		// 检查延迟 - 直接使用 int 值比较
-		if result.AvgLatency < minLatency || result.AvgLatency > maxLatency {
-			continue
-		}
-
-		// 检查丢包率
-		if result.LossRate > maxLossRate {
-			continue
-		}
-
-		filtered = append(filtered, result)
-	}
-
-	return filtered
 }
 
 // 写入结果到CSV
@@ -1565,9 +1478,9 @@ func printResultsSummary(results []TestResult) {
 		table.Append([]string{
 			dc,
 			fmt.Sprintf("%d", stats.count),
-			fmt.Sprintf("%d", stats.maxLatency),
-			fmt.Sprintf("%d", avgLatency),
-			fmt.Sprintf("%d", stats.minLatency),
+			fmt.Sprintf("%dms", stats.maxLatency),
+			fmt.Sprintf("%dms", avgLatency),
+			fmt.Sprintf("%dms", stats.minLatency),
 		})
 	}
 	table.Render()
