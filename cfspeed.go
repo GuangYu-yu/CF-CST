@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/csv"
+	"encoding/gob"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -14,14 +15,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/klauspost/compress/zstd"
 
 	"github.com/cheggaaa/pb/v3"
 	"github.com/olekukonko/tablewriter"
@@ -59,8 +59,6 @@ type CIDRGroup struct {
 	AvgLatency int
 	LossRate   float64
 	Results    []TestResult // 存储组内每个IP的测试结果
-	compressed bool         // 标记是否已压缩
-	buffer     []byte       // 压缩后的数据
 }
 
 type location struct {
@@ -113,65 +111,6 @@ func shouldIncludeResult(result TestResult, coloFlag *string, minLatency, maxLat
 	return true
 }
 
-// 压缩和解压方法
-func (g *CIDRGroup) Compress() {
-	if g.compressed || len(g.Results) == 0 {
-		return
-	}
-
-	// 将结果序列化为JSON
-	data, err := json.Marshal(g.Results)
-	if err != nil {
-		return
-	}
-
-	// 使用zstd压缩数据
-	encoder, err := zstd.NewWriter(nil)
-	if err != nil {
-		return
-	}
-
-	// 压缩数据
-	g.buffer = encoder.EncodeAll(data, nil)
-
-	// 存储压缩后的数据并释放原始结果
-	g.Results = nil
-	g.compressed = true
-}
-
-func (g *CIDRGroup) Decompress() {
-	if !g.compressed || g.buffer == nil {
-		return
-	}
-
-	// 使用zstd解压数据
-	decoder, err := zstd.NewReader(nil)
-	if err != nil {
-		return
-	}
-
-	// 解压数据
-	data, err := decoder.DecodeAll(g.buffer, nil)
-	if err != nil {
-		return
-	}
-
-	// 反序列化为结果数组
-	var results []TestResult
-	if err := json.Unmarshal(data, &results); err != nil {
-		return
-	}
-
-	g.Results = results
-	g.compressed = false
-}
-
-func (g *CIDRGroup) Release() {
-	g.buffer = nil
-	g.Results = nil
-	g.compressed = false
-}
-
 func main() {
 	// 添加全局超时控制
 	defaultTimeout := 5 * time.Hour // 修改默认超时时间为5小时
@@ -210,6 +149,7 @@ func main() {
 	select {
 	case <-done:
 		// 程序正常完成
+		os.Remove(filepath.Join(os.TempDir(), "cache_results.bin"))
 		fmt.Println("程序执行完成")
 	case <-ctx.Done():
 		// 程序超时
@@ -292,7 +232,6 @@ func runMainProgram() {
 
 	// 处理CIDR列表，将大于/24的IPv4 CIDR拆分为多个/24，将大于/48的IPv6 CIDR拆分为多个/48
 	expandedCIDRs := expandCIDRs(cidrList)
-	fmt.Printf("处理后共有 %d 个CIDR\n", len(expandedCIDRs))
 
 	// 如果指定了 -notest 参数，直接生成IP文件并退出
 	if *noTest {
@@ -333,45 +272,182 @@ func runMainProgram() {
 	}
 
 	// 测试IP性能
-	cidrGroups = testIPs(cidrGroups, *portFlag, *testCount, *scanThreads, *ipPerCIDR, locationMap,
+	testIPs(cidrGroups, *portFlag, *testCount, *scanThreads, *ipPerCIDR, locationMap,
 		coloFlag, minLatency, maxLatency, maxLossRate, showAll)
 
-	// 收集已合并的结果
-	var filteredResults []TestResult
-	for _, group := range cidrGroups {
-		// 如果组被压缩，先解压
-		if group.compressed {
-			group.Decompress()
+	// 打开缓存文件
+	cacheFilePath := filepath.Join(os.TempDir(), "cache_results.bin")
+	cacheFile, err := os.Open(cacheFilePath)
+	if err != nil {
+		fmt.Printf("打开缓存文件失败: %v\n", err)
+		return
+	}
+	defer cacheFile.Close()
+
+	// 分块读取并排序
+	chunkSize := 10000      // 每个块的大小
+	tempDir := os.TempDir() // 临时文件目录
+	var tempFiles []string
+
+	// 第一阶段：分块排序并写入临时文件
+	chunkIndex := 0
+	for {
+		// 读取一个块的数据
+		chunk := make([]TestResult, 0, chunkSize)
+		decoder := gob.NewDecoder(cacheFile)
+
+		for i := 0; i < chunkSize; i++ {
+			var result TestResult
+			err := decoder.Decode(&result)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				fmt.Printf("读取结果失败: %v\n", err)
+				continue
+			}
+			chunk = append(chunk, result)
 		}
 
-		if len(group.Results) > 0 {
-			filteredResults = append(filteredResults, group.Results[0])
+		if len(chunk) == 0 {
+			break // 没有更多数据
 		}
 
-		// 处理完后释放内存
-		group.Release()
+		// 对块内数据排序
+		sort.Slice(chunk, func(i, j int) bool {
+			if chunk[i].LossRate == chunk[j].LossRate {
+				return chunk[i].AvgLatency < chunk[j].AvgLatency
+			}
+			return chunk[i].LossRate < chunk[j].LossRate
+		})
+
+		// 写入临时文件
+		tempFile := filepath.Join(tempDir, fmt.Sprintf("cfspeed_sort_%d.tmp", chunkIndex))
+		file, err := os.Create(tempFile)
+		if err != nil {
+			fmt.Printf("创建临时文件失败: %v\n", err)
+			return
+		}
+
+		encoder := gob.NewEncoder(file)
+		for _, result := range chunk {
+			if err := encoder.Encode(result); err != nil {
+				fmt.Printf("写入临时文件失败: %v\n", err)
+			}
+		}
+
+		file.Close()
+		tempFiles = append(tempFiles, tempFile)
+		chunkIndex++
 	}
 
-	// 过滤结果
-	fmt.Printf("符合条件的结果: %d 个\n", len(filteredResults))
+	// 第二阶段：归并排序
+	var filteredResults []TestResult
 
-	// 排序结果
-	sort.Slice(filteredResults, func(i, j int) bool {
-		if filteredResults[i].LossRate == filteredResults[j].LossRate {
-			return filteredResults[i].AvgLatency < filteredResults[j].AvgLatency
+	if len(tempFiles) == 0 {
+		fmt.Println("没有找到有效的测试结果")
+		return
+	} else if len(tempFiles) == 1 {
+		// 只有一个临时文件，直接读取
+		file, err := os.Open(tempFiles[0])
+		if err != nil {
+			fmt.Printf("打开临时文件失败: %v\n", err)
+			return
 		}
-		return filteredResults[i].LossRate < filteredResults[j].LossRate
-	})
+
+		decoder := gob.NewDecoder(file)
+		for {
+			var result TestResult
+			err := decoder.Decode(&result)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				fmt.Printf("读取临时文件失败: %v\n", err)
+				continue
+			}
+
+			// 直接添加结果
+			filteredResults = append(filteredResults, result)
+		}
+
+		file.Close()
+	} else {
+
+		// 创建一个优先队列用于归并
+		type QueueItem struct {
+			result    TestResult
+			fileIndex int
+		}
+
+		queue := make([]QueueItem, 0, len(tempFiles))
+		files := make([]*os.File, len(tempFiles))
+		decoders := make([]*gob.Decoder, len(tempFiles))
+
+		// 初始化，从每个文件读取第一个元素
+		for i, tempFile := range tempFiles {
+			file, err := os.Open(tempFile)
+			if err != nil {
+				fmt.Printf("打开临时文件失败: %v\n", err)
+				continue
+			}
+
+			files[i] = file
+			decoders[i] = gob.NewDecoder(file)
+
+			var result TestResult
+			if err := decoders[i].Decode(&result); err == nil {
+				queue = append(queue, QueueItem{result, i})
+			}
+		}
+
+		// 使用堆排序进行归并
+		for len(queue) > 0 {
+			// 找出最小元素
+			minIdx := 0
+			for i := 1; i < len(queue); i++ {
+				if (queue[i].result.LossRate < queue[minIdx].result.LossRate) ||
+					(queue[i].result.LossRate == queue[minIdx].result.LossRate &&
+						queue[i].result.AvgLatency < queue[minIdx].result.AvgLatency) {
+					minIdx = i
+				}
+			}
+
+			// 添加到结果集
+			filteredResults = append(filteredResults, queue[minIdx].result)
+
+			// 从对应文件读取下一个元素
+			fileIdx := queue[minIdx].fileIndex
+			var nextResult TestResult
+			if err := decoders[fileIdx].Decode(&nextResult); err == nil {
+				// 替换当前元素
+				queue[minIdx].result = nextResult
+			} else {
+				// 文件读完了，从队列中移除
+				queue = append(queue[:minIdx], queue[minIdx+1:]...)
+			}
+		}
+
+		// 关闭所有文件
+		for _, file := range files {
+			if file != nil {
+				file.Close()
+			}
+		}
+	}
+
+	// 清理临时文件
+	for _, tempFile := range tempFiles {
+		os.Remove(tempFile)
+	}
 
 	// 限制输出数量
 	if *printCount != "all" {
 		count, err := strconv.Atoi(*printCount)
 		if err == nil && count > 0 {
-			// 只有当结果数量大于指定数量时才截取
 			if count < len(filteredResults) {
 				filteredResults = filteredResults[:count]
 			}
-			// 否则保持原有结果不变
 		}
 	}
 
@@ -891,14 +967,28 @@ func formatDuration(d time.Duration) string {
 
 // 测试IP性能
 func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int, locationMap map[string]location,
-	coloFlag *string, minLatency, maxLatency *int, maxLossRate *float64, showAll *bool) []CIDRGroup {
+	coloFlag *string, minLatency, maxLatency *int, maxLossRate *float64, showAll *bool) {
 	// 初始化并发控制
 	if globalSem == nil {
 		globalSem = semaphore.NewWeighted(int64(maxThreads))
 	}
 
+	// 删除已存在的缓存文件
+	cacheFilePath := filepath.Join(os.TempDir(), "cache_results.bin")
+	os.Remove(cacheFilePath)
+
+	// 创建缓存文件，使用当前目录
+	cacheFile, err := os.Create(cacheFilePath)
+	if err != nil {
+		fmt.Printf("创建缓存文件失败: %v\n", err)
+		return
+	}
+	defer cacheFile.Close()
+
+	// 使用 gob
+	encoder := gob.NewEncoder(cacheFile)
+
 	// 添加内存管理相关变量
-	const maxUncompressedGroups = 100 // 最大未压缩组数量
 	var processedGroupCount int32
 	var mutex sync.Mutex
 	var wg sync.WaitGroup
@@ -959,7 +1049,6 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 		defer close(resultChan)
 		for result := range resultChan {
 			mutex.Lock()
-
 			counts := cidrIPCounts[result.CIDR]
 
 			// 添加结果到临时存储
@@ -967,46 +1056,30 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 				if cidrGroups[i].CIDR == result.CIDR {
 					cidrGroups[i].Results = append(cidrGroups[i].Results, result)
 
-					// 使用实际结果数量判断是否完成
 					if len(cidrGroups[i].Results) == counts.total {
-						// 计算平均值
-						var totalLatency int
-						var totalLossRate float64
-						results := cidrGroups[i].Results
+						// 计算平均值并写入文件
+						avgResult := calculateAverageResult(cidrGroups[i].Results)
 
-						for _, r := range results {
-							totalLatency += r.AvgLatency
-							totalLossRate += r.LossRate
+						// 写入文件后清理内存
+						if shouldIncludeResult(avgResult, coloFlag, minLatency, maxLatency, maxLossRate, showAll) {
+							err := encoder.Encode(avgResult)
+							if err != nil {
+								fmt.Printf("写入结果失败: %v\n", err)
+							}
 						}
 
-						avgResult := TestResult{
-							CIDR:       result.CIDR,
-							DataCenter: results[0].DataCenter,
-							Region:     results[0].Region,
-							City:       results[0].City,
-							AvgLatency: totalLatency / len(results),
-							LossRate:   totalLossRate / float64(len(results)),
-						}
+						// 清理内存
+						cidrGroups[i].Results = nil
+						// 清理该CIDR的计数信息
+						delete(cidrIPCounts, result.CIDR)
+						// 清理该CIDR的缓存信息
+						delete(cidrColoMap, result.CIDR)
 
-						// 调用过滤函数
-						if !shouldIncludeResult(avgResult, coloFlag, minLatency, maxLatency, maxLossRate, showAll) {
-							cidrGroups[i].Results = nil
-						} else {
-							cidrGroups[i].Results = []TestResult{avgResult}
-						}
-
-						// 增加已处理组计数
 						atomic.AddInt32(&processedGroupCount, 1)
 					}
 					break
 				}
 			}
-
-			// 检查是否需要压缩一些组以释放内存
-			if atomic.LoadInt32(&processedGroupCount) > maxUncompressedGroups {
-				compressGroups(cidrGroups)
-			}
-
 			mutex.Unlock()
 		}
 	}()
@@ -1127,27 +1200,29 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 	// 计算TCP测试成功率
 	tcpSuccessRate := float64(tcpSuccessCount) / float64(totalIPs) * 100
 	fmt.Printf("TCP测试完成，成功率: %.2f%% (%d/%d)\n", tcpSuccessRate, tcpSuccessCount, totalIPs)
-
-	// 在返回结果前解压所有需要的组
-	decompressFilteredGroups(cidrGroups)
-
-	return cidrGroups
 }
 
-// 添加新的辅助函数用于压缩和解压组
-func compressGroups(groups []CIDRGroup) {
-	for i := range groups {
-		if len(groups[i].Results) > 0 && !groups[i].compressed {
-			groups[i].Compress()
-		}
+// 计算平均结果的辅助函数
+func calculateAverageResult(results []TestResult) TestResult {
+	if len(results) == 0 {
+		return TestResult{}
 	}
-}
 
-func decompressFilteredGroups(groups []CIDRGroup) {
-	for i := range groups {
-		if groups[i].compressed {
-			groups[i].Decompress()
-		}
+	var totalLatency int
+	var totalLossRate float64
+
+	for _, r := range results {
+		totalLatency += r.AvgLatency
+		totalLossRate += r.LossRate
+	}
+
+	return TestResult{
+		CIDR:       results[0].CIDR,
+		DataCenter: results[0].DataCenter,
+		Region:     results[0].Region,
+		City:       results[0].City,
+		AvgLatency: totalLatency / len(results),
+		LossRate:   totalLossRate / float64(len(results)),
 	}
 }
 
