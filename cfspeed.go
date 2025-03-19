@@ -251,9 +251,6 @@ func runMainProgram() {
 		}
 	}
 
-	// 不再需要提前生成所有IP
-	fmt.Printf("共有 %d 个CIDR组\n", len(cidrGroups))
-
 	// 测试IP性能
 	cidrGroups = testIPs(cidrGroups, *portFlag, *testCount, *scanThreads, *ipPerCIDR, locationMap,
 		coloFlag, minLatency, maxLatency, maxLossRate, showAll)
@@ -1421,7 +1418,6 @@ func printResultsSummary(results []TestResult) {
 	}
 
 	fmt.Println("\n测试结果摘要:")
-	fmt.Printf("共测试 %d 个IP\n", len(results))
 
 	// 统计数据中心分布和延迟
 	dcMap := make(map[string]struct {
