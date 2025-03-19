@@ -871,12 +871,6 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 		for result := range resultChan {
 			mutex.Lock()
 
-			// 使用传入的参数进行过滤
-			if !shouldIncludeResult(result, coloFlag, minLatency, maxLatency, maxLossRate, showAll) {
-				mutex.Unlock()
-				continue
-			}
-
 			// 更新计数
 			counts := cidrIPCounts[result.CIDR]
 			counts.current++
@@ -909,8 +903,14 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 							LossRate:   totalLossRate / float64(len(results)),
 						}
 
-						// 用平均结果替换详细结果，释放内存
-						cidrGroups[i].Results = []TestResult{avgResult}
+						// 在这里对平均结果进行过滤
+						if !shouldIncludeResult(avgResult, coloFlag, minLatency, maxLatency, maxLossRate, showAll) {
+							// 如果平均结果不符合条件，清空结果以释放内存
+							cidrGroups[i].Results = nil
+						} else {
+							// 用平均结果替换详细结果，释放内存
+							cidrGroups[i].Results = []TestResult{avgResult}
+						}
 					}
 					break
 				}
