@@ -52,7 +52,7 @@ jobs:
           go mod init cfspeed
           
           go get github.com/olekukonko/tablewriter
-          go get github.com/VictoriaMetrics/fastcache
+          go get github.com/klauspost/compress/zstd
           go get github.com/cheggaaa/pb/v3
           go get golang.org/x/sync/semaphore
          
