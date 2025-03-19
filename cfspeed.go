@@ -860,7 +860,6 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 	bar.Set("total", fmt.Sprintf("%d", totalIPs))
 	bar.Set("current", "0")
 	bar.Start()
-	defer bar.Finish()
 
 	// 启动结果处理协程
 	go func() {
@@ -868,18 +867,15 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 		for result := range resultChan {
 			mutex.Lock()
 
-			// 更新计数
 			counts := cidrIPCounts[result.CIDR]
-			counts.current++
-			cidrIPCounts[result.CIDR] = counts
 
 			// 添加结果到临时存储
 			for i := range cidrGroups {
 				if cidrGroups[i].CIDR == result.CIDR {
 					cidrGroups[i].Results = append(cidrGroups[i].Results, result)
 
-					// 如果该 CIDR 的所有 IP 都已测试完成
-					if counts.current == counts.total {
+					// 使用实际结果数量判断是否完成
+					if len(cidrGroups[i].Results) == counts.total {
 						// 计算平均值
 						var totalLatency int
 						var totalLossRate float64
@@ -890,7 +886,6 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 							totalLossRate += r.LossRate
 						}
 
-						// 创建平均结果
 						avgResult := TestResult{
 							CIDR:       result.CIDR,
 							DataCenter: results[0].DataCenter,
@@ -900,12 +895,10 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 							LossRate:   totalLossRate / float64(len(results)),
 						}
 
-						// 在这里对平均结果进行过滤
+						// 调用过滤函数
 						if !shouldIncludeResult(avgResult, coloFlag, minLatency, maxLatency, maxLossRate, showAll) {
-							// 如果平均结果不符合条件，清空结果以释放内存
 							cidrGroups[i].Results = nil
 						} else {
-							// 用平均结果替换详细结果，释放内存
 							cidrGroups[i].Results = []TestResult{avgResult}
 						}
 					}
@@ -1025,6 +1018,9 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 
 	// 等待所有工作完成
 	wg.Wait()
+
+	// 先完成进度条
+	bar.Finish()
 
 	// 计算TCP测试成功率
 	tcpSuccessRate := float64(tcpSuccessCount) / float64(totalIPs) * 100
