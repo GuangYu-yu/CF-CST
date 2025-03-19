@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
+
 	"github.com/cheggaaa/pb/v3"
 	"github.com/olekukonko/tablewriter"
 	"golang.org/x/sync/semaphore"
@@ -57,6 +59,8 @@ type CIDRGroup struct {
 	AvgLatency int
 	LossRate   float64
 	Results    []TestResult // 存储组内每个IP的测试结果
+	compressed bool         // 标记是否已压缩
+	buffer     []byte       // 压缩后的数据
 }
 
 type location struct {
@@ -109,12 +113,88 @@ func shouldIncludeResult(result TestResult, coloFlag *string, minLatency, maxLat
 	return true
 }
 
-func main() {
+// 压缩和解压方法
+func (g *CIDRGroup) Compress() {
+	if g.compressed || len(g.Results) == 0 {
+		return
+	}
 
+	// 将结果序列化为JSON
+	data, err := json.Marshal(g.Results)
+	if err != nil {
+		return
+	}
+
+	// 使用zstd压缩数据
+	encoder, err := zstd.NewWriter(nil)
+	if err != nil {
+		return
+	}
+
+	// 压缩数据
+	g.buffer = encoder.EncodeAll(data, nil)
+
+	// 存储压缩后的数据并释放原始结果
+	g.Results = nil
+	g.compressed = true
+}
+
+func (g *CIDRGroup) Decompress() {
+	if !g.compressed || g.buffer == nil {
+		return
+	}
+
+	// 使用zstd解压数据
+	decoder, err := zstd.NewReader(nil)
+	if err != nil {
+		return
+	}
+
+	// 解压数据
+	data, err := decoder.DecodeAll(g.buffer, nil)
+	if err != nil {
+		return
+	}
+
+	// 反序列化为结果数组
+	var results []TestResult
+	if err := json.Unmarshal(data, &results); err != nil {
+		return
+	}
+
+	g.Results = results
+	g.compressed = false
+}
+
+func (g *CIDRGroup) Release() {
+	g.buffer = nil
+	g.Results = nil
+	g.compressed = false
+}
+
+func main() {
 	// 添加全局超时控制
-	globalTimeout := 120 * time.Minute // 设置全局超时时间
-	ctx, cancel := context.WithTimeout(context.Background(), globalTimeout)
-	defer cancel()
+	defaultTimeout := 5 * time.Hour // 修改默认超时时间为5小时
+	timeoutFlag := flag.String("timeout", defaultTimeout.String(), "程序执行超时时间，格式如：5h30m10s，设置为0则不限制时间")
+
+	// 解析超时时间
+	globalTimeout, err := time.ParseDuration(*timeoutFlag)
+	if err != nil {
+		fmt.Printf("无效的超时时间格式: %s, 使用默认值: %s\n", *timeoutFlag, defaultTimeout)
+		globalTimeout = defaultTimeout
+	}
+
+	// 创建上下文，如果超时时间为0则不设置超时
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if globalTimeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), globalTimeout)
+		defer cancel()
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+		defer cancel()
+		fmt.Println("已设置为不限制执行时间")
+	}
 
 	// 创建一个通道用于接收程序完成信号
 	done := make(chan bool)
@@ -137,6 +217,7 @@ func main() {
 		os.Exit(1)
 	}
 }
+
 func runMainProgram() {
 	// 定义命令行参数
 	urlFlag := flag.String("url", "", "测速的CIDR链接")
@@ -144,7 +225,7 @@ func runMainProgram() {
 	testCount := flag.Int("t", 4, "延迟测速的次数")
 	portFlag := flag.Int("tp", 443, "指定测速的端口号")
 	ipPerCIDR := flag.Int("ts", 2, "从CIDR内随机选择IP的数量")
-	coloFlag := flag.String("colo", "", "匹配指定地区，用逗号分隔，例如 HKG,KHH,NRT,LAX")
+	coloFlag := flag.String("colo", "", "匹配指定数据中心，用逗号分隔，例如 HKG,KHH,NRT,LAX")
 	maxLatency := flag.Int("tl", 500, "平均延迟上限(ms)")
 	minLatency := flag.Int("tll", 0, "平均延迟下限(ms)")
 	maxLossRate := flag.Float64("tlr", 0.5, "丢包率上限")
@@ -258,9 +339,17 @@ func runMainProgram() {
 	// 收集已合并的结果
 	var filteredResults []TestResult
 	for _, group := range cidrGroups {
+		// 如果组被压缩，先解压
+		if group.compressed {
+			group.Decompress()
+		}
+
 		if len(group.Results) > 0 {
 			filteredResults = append(filteredResults, group.Results[0])
 		}
+
+		// 处理完后释放内存
+		group.Release()
 	}
 
 	// 过滤结果
@@ -322,6 +411,7 @@ func printHelp() {
 	fmt.Println("  -h               显示帮助信息")
 	fmt.Println("  -notest          不进行测速，只生成随机IP (需配合 -useip4 或 -useip6 使用)")
 	fmt.Println("  -showall         使用后显示所有结果，包括未查询到数据中心的结果")
+	fmt.Println("  -timeout string  程序执行超时退出 (默认: 5h0m0s)，设置为 0 则不限制时间")
 
 	fmt.Println("\n测速参数:")
 	fmt.Println("  -t int           延迟测试次数 (默认: 4)")
@@ -338,11 +428,11 @@ func printHelp() {
 	fmt.Println("  -p string        输出结果数量 (默认: all)")
 
 	fmt.Println("\n输出选项:")
-	fmt.Println("  -nocsv           不生成CSV文件")
-	fmt.Println("  -useip4 string   生成IPv4列表")
+	fmt.Println("  -nocsv           不生成CSV文件 (默认: 不使用)")
+	fmt.Println("  -useip4 string   生成IPv4列表 (默认: 不使用)")
 	fmt.Println("                   - 使用 all: 输出所有IPv4 CIDR的完整IP列表")
 	fmt.Println("                   - 使用数字 (如9999): 输出指定数量的不重复IPv4")
-	fmt.Println("  -useip6 string   生成IPv6列表")
+	fmt.Println("  -useip6 string   生成IPv6列表 (默认: 不使用)")
 	fmt.Println("                   - 使用数字 (如9999): 输出指定数量的不重复IPv6")
 	fmt.Println("  -iptxt string    指定IP列表输出文件名 (默认: ip.txt)")
 	fmt.Println("                   - 使用此参数时必须至少使用 -useip4 或 -useip6")
@@ -807,6 +897,9 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 		globalSem = semaphore.NewWeighted(int64(maxThreads))
 	}
 
+	// 添加内存管理相关变量
+	const maxUncompressedGroups = 100 // 最大未压缩组数量
+	var processedGroupCount int32
 	var mutex sync.Mutex
 	var wg sync.WaitGroup
 
@@ -901,10 +994,19 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 						} else {
 							cidrGroups[i].Results = []TestResult{avgResult}
 						}
+
+						// 增加已处理组计数
+						atomic.AddInt32(&processedGroupCount, 1)
 					}
 					break
 				}
 			}
+
+			// 检查是否需要压缩一些组以释放内存
+			if atomic.LoadInt32(&processedGroupCount) > maxUncompressedGroups {
+				compressGroups(cidrGroups)
+			}
+
 			mutex.Unlock()
 		}
 	}()
@@ -1026,7 +1128,27 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 	tcpSuccessRate := float64(tcpSuccessCount) / float64(totalIPs) * 100
 	fmt.Printf("TCP测试完成，成功率: %.2f%% (%d/%d)\n", tcpSuccessRate, tcpSuccessCount, totalIPs)
 
+	// 在返回结果前解压所有需要的组
+	decompressFilteredGroups(cidrGroups)
+
 	return cidrGroups
+}
+
+// 添加新的辅助函数用于压缩和解压组
+func compressGroups(groups []CIDRGroup) {
+	for i := range groups {
+		if len(groups[i].Results) > 0 && !groups[i].compressed {
+			groups[i].Compress()
+		}
+	}
+}
+
+func decompressFilteredGroups(groups []CIDRGroup) {
+	for i := range groups {
+		if groups[i].compressed {
+			groups[i].Decompress()
+		}
+	}
 }
 
 // 获取数据中心信息
@@ -1495,7 +1617,7 @@ func printResultsSummary(results []TestResult) {
 
 	// 显示最佳结果表格
 	resultTable := tablewriter.NewWriter(os.Stdout)
-	resultTable.SetHeader([]string{"CIDR", "地区(数据中心)", "平均延迟", "平均丢包"})
+	resultTable.SetHeader([]string{"CIDR", "城市(数据中心)", "平均延迟", "平均丢包"})
 	resultTable.SetBorder(false)
 	resultTable.SetColumnAlignment([]int{tablewriter.ALIGN_LEFT, tablewriter.ALIGN_LEFT, tablewriter.ALIGN_RIGHT, tablewriter.ALIGN_RIGHT})
 
