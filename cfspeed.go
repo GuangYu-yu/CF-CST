@@ -284,6 +284,9 @@ func runMainProgram() {
 	}
 	defer cacheFile.Close()
 
+	// 使用带缓冲的读取器
+	bufferedReader := bufio.NewReader(cacheFile)
+
 	// 分块读取并排序
 	chunkSize := 10000      // 每个块的大小
 	tempDir := os.TempDir() // 临时文件目录
@@ -294,7 +297,7 @@ func runMainProgram() {
 	for {
 		// 读取一个块的数据
 		chunk := make([]TestResult, 0, chunkSize)
-		decoder := gob.NewDecoder(cacheFile)
+		decoder := gob.NewDecoder(bufferedReader)
 
 		for i := 0; i < chunkSize; i++ {
 			var result TestResult
@@ -329,14 +332,20 @@ func runMainProgram() {
 			return
 		}
 
-		encoder := gob.NewEncoder(file)
+		// 使用带缓冲的写入器
+		bufferedWriter := bufio.NewWriter(file)
+
+		encoder := gob.NewEncoder(bufferedWriter)
 		for _, result := range chunk {
 			if err := encoder.Encode(result); err != nil {
 				fmt.Printf("写入临时文件失败: %v\n", err)
 			}
 		}
 
-		file.Close()
+		// 确保数据写入磁盘
+		bufferedWriter.Flush()
+		file.Close() // 立即关闭文件，而不是使用defer
+
 		tempFiles = append(tempFiles, tempFile)
 		chunkIndex++
 	}
@@ -977,7 +986,7 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 	cacheFilePath := filepath.Join(os.TempDir(), "cache_results.bin")
 	os.Remove(cacheFilePath)
 
-	// 创建缓存文件，使用当前目录
+	// 创建缓存文件，使用临时目录
 	cacheFile, err := os.Create(cacheFilePath)
 	if err != nil {
 		fmt.Printf("创建缓存文件失败: %v\n", err)
@@ -985,8 +994,12 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 	}
 	defer cacheFile.Close()
 
+	// 使用带缓冲的写入器
+	bufferedWriter := bufio.NewWriter(cacheFile)
+	defer bufferedWriter.Flush() // 确保所有数据都被写入
+
 	// 使用 gob
-	encoder := gob.NewEncoder(cacheFile)
+	encoder := gob.NewEncoder(bufferedWriter)
 
 	// 添加内存管理相关变量
 	var processedGroupCount int32
@@ -1133,12 +1146,17 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 				totalLatency := time.Duration(0)
 				for i := 0; i < testCount; i++ {
 					start := time.Now()
-					conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), time.Second)
+					// 使用 Dialer 结构体来更精细地控制连接行为
+					dialer := net.Dialer{
+						Timeout:   1000 * time.Millisecond,
+						KeepAlive: -1, // 禁用 KeepAlive
+					}
+					conn, err := dialer.Dial("tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
 					if err != nil {
 						continue
 					}
 					latency := time.Since(start)
-					conn.Close()
+					conn.Close() // 确保连接被关闭
 
 					localSuccessCount++
 					totalLatency += latency
@@ -1228,26 +1246,31 @@ func calculateAverageResult(results []TestResult) TestResult {
 
 // 获取数据中心信息
 func getDataCenterInfo(ip string, locationMap map[string]location) (string, string, string) {
-
 	// 使用全局通道控制并发
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+
 	if err := globalSem.Acquire(ctx, 1); err != nil {
 		return "Unknown", "", ""
 	}
 	defer globalSem.Release(1)
 
-	maxRetries := 3 // 减少重试次数
+	maxRetries := 3 // 重试次数
 
 	// 使用共享的 Transport 对象
 	transport := &http.Transport{
 		DisableKeepAlives: true,
-		IdleConnTimeout:   1000 * time.Millisecond, // 减少超时时间
+		IdleConnTimeout:   800 * time.Millisecond,
 		MaxIdleConns:      100,
 		MaxConnsPerHost:   10,
+		DialContext: (&net.Dialer{
+			Timeout:   600 * time.Millisecond,
+			KeepAlive: -1, // 禁用 KeepAlive
+		}).DialContext,
 	}
 
 	client := &http.Client{
-		Timeout:   800 * time.Millisecond, // 减少超时时间
+		Timeout:   800 * time.Millisecond,
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
