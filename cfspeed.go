@@ -1006,7 +1006,8 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 	var mutex sync.Mutex
 	var wg sync.WaitGroup
 
-	resultChan := make(chan TestResult, maxThreads)
+	// 创建一个带缓冲的结果通道，避免阻塞
+	resultChan := make(chan TestResult, maxThreads*2)
 
 	// CIDR 完成计数器
 	cidrIPCounts := make(map[string]struct {
@@ -1057,6 +1058,10 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 	bar.Set("current", "0")
 	bar.Start()
 
+	// 创建一个全局上下文，用于控制所有goroutine
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // 确保在函数返回时取消所有goroutine
+
 	// 启动结果处理协程
 	go func() {
 		defer close(resultChan)
@@ -1103,6 +1108,14 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 		go func() {
 			defer wg.Done()
 			for {
+				// 检查全局上下文是否已取消
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					// 继续执行
+				}
+
 				// 获取一个未完成的CIDR
 				mutex.Lock()
 				var currentGroup *CIDRGroup
@@ -1145,13 +1158,21 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 				localSuccessCount := 0
 				totalLatency := time.Duration(0)
 				for i := 0; i < testCount; i++ {
+					// 为每个连接创建一个超时上下文
+					connCtx, connCancel := context.WithTimeout(ctx, 1000*time.Millisecond)
+
 					start := time.Now()
 					// 使用 Dialer 结构体来更精细地控制连接行为
 					dialer := net.Dialer{
-						Timeout:   1000 * time.Millisecond,
-						KeepAlive: -1, // 禁用 KeepAlive
+						Timeout:   1000 * time.Millisecond, // 超时时间
+						KeepAlive: -1,                      // 禁用 KeepAlive
+						Cancel:    connCtx.Done(),          // 使用上下文的取消信号
 					}
-					conn, err := dialer.Dial("tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+					conn, err := dialer.DialContext(connCtx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+
+					// 立即取消连接上下文，避免泄漏
+					connCancel()
+
 					if err != nil {
 						continue
 					}
@@ -1195,8 +1216,12 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 					}
 
 					// 发送结果到结果通道
-					resultChan <- result
-					atomic.AddInt32(&tcpSuccessCount, 1)
+					select {
+					case resultChan <- result:
+						atomic.AddInt32(&tcpSuccessCount, 1)
+					case <-ctx.Done():
+						return
+					}
 				}
 
 				// 更新进度
@@ -1265,7 +1290,8 @@ func getDataCenterInfo(ip string, locationMap map[string]location) (string, stri
 		MaxConnsPerHost:   10,
 		DialContext: (&net.Dialer{
 			Timeout:   600 * time.Millisecond,
-			KeepAlive: -1, // 禁用 KeepAlive
+			KeepAlive: -1,         // 禁用 KeepAlive
+			Cancel:    ctx.Done(), // 使用上下文的取消信号
 		}).DialContext,
 	}
 
@@ -1286,7 +1312,7 @@ func getDataCenterInfo(ip string, locationMap map[string]location) (string, stri
 			hostIP = "[" + ip + "]"
 		}
 
-		req, err := http.NewRequest("HEAD", "http://cloudflare.com", nil)
+		req, err := http.NewRequestWithContext(ctx, "HEAD", "http://cloudflare.com", nil)
 		if err != nil {
 			continue
 		}
