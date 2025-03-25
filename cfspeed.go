@@ -5,17 +5,14 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/csv"
-	"encoding/gob"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"math/big"
 	"math/rand"
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -50,31 +47,79 @@ func (r *TestResult) Clear() {
 	r.LossRate = 0
 }
 
-type CIDRGroup struct {
+// 临时测试数据
+type CIDRTestData struct {
+	IPs     []string
+	Results []TestResult
+}
+
+// 最终结果
+type CIDRResult struct {
 	CIDR       string
-	IPs        []string
 	DataCenter string
 	Region     string
 	City       string
 	AvgLatency int
 	LossRate   float64
-	Results    []TestResult // 存储组内每个IP的测试结果
+}
+
+// 测试过程中的结构
+type CIDRGroup struct {
+	CIDR   string
+	Data   *CIDRTestData // 临时数据
+	Result *TestResult
 }
 
 type location struct {
-	Iata   string  `json:"iata"`
-	Lat    float64 `json:"lat"`
-	Lon    float64 `json:"lon"`
-	Cca2   string  `json:"cca2"`
-	Region string  `json:"region"`
-	City   string  `json:"city"`
+	Iata   string `json:"iata"`
+	Region string `json:"region"`
+	City   string `json:"city"`
 }
 
 // ----------------------- 主程序入口 -----------------------
 
 var (
-	globalSem *semaphore.Weighted
+	globalSem      *semaphore.Weighted
+	testDataPool   sync.Pool
+	resultPool     sync.Pool
+	testResultPool sync.Pool
+	cidrStringPool sync.Map // CIDR 字符串池
 )
+
+// 获取共享 CIDR 字符串的函数
+func getSharedCIDR(cidr string) string {
+	if pooledCIDR, ok := cidrStringPool.Load(cidr); ok {
+		return pooledCIDR.(string)
+	}
+	cidrStringPool.Store(cidr, cidr)
+	return cidr
+}
+
+func init() {
+	// 初始化对象池
+	testDataPool = sync.Pool{
+		New: func() interface{} {
+			return &CIDRTestData{
+				IPs:     make([]string, 0),
+				Results: make([]TestResult, 0),
+			}
+		},
+	}
+
+	// 初始化 resultPool
+	resultPool = sync.Pool{
+		New: func() interface{} {
+			return &TestResult{}
+		},
+	}
+
+	// 初始化 TestResult 对象池
+	testResultPool = sync.Pool{
+		New: func() interface{} {
+			return &TestResult{}
+		},
+	}
+}
 
 // shouldIncludeResult 检查结果是否符合过滤条件
 func shouldIncludeResult(result TestResult, coloFlag *string, minLatency, maxLatency *int, maxLossRate *float64, showAll *bool) bool {
@@ -149,7 +194,6 @@ func main() {
 	select {
 	case <-done:
 		// 程序正常完成
-		os.Remove(filepath.Join(os.TempDir(), "cache_results.bin"))
 		fmt.Println("程序执行完成")
 	case <-ctx.Done():
 		// 程序超时
@@ -232,6 +276,7 @@ func runMainProgram() {
 
 	// 处理CIDR列表，将大于/24的IPv4 CIDR拆分为多个/24，将大于/48的IPv6 CIDR拆分为多个/48
 	expandedCIDRs := expandCIDRs(cidrList)
+	fmt.Printf("处理后共有 %d 个CIDR\n", len(expandedCIDRs))
 
 	// 如果指定了 -notest 参数，直接生成IP文件并退出
 	if *noTest {
@@ -272,191 +317,42 @@ func runMainProgram() {
 	}
 
 	// 测试IP性能
-	testIPs(cidrGroups, *portFlag, *testCount, *scanThreads, *ipPerCIDR, locationMap,
+	cidrGroups = testIPs(cidrGroups, *portFlag, *testCount, *scanThreads, *ipPerCIDR, locationMap,
 		coloFlag, minLatency, maxLatency, maxLossRate, showAll)
 
-	// 打开缓存文件
-	cacheFilePath := filepath.Join(os.TempDir(), "cache_results.bin")
-	cacheFile, err := os.Open(cacheFilePath)
-	if err != nil {
-		fmt.Printf("打开缓存文件失败: %v\n", err)
-		return
-	}
-	defer cacheFile.Close()
-
-	// 使用带缓冲的读取器
-	bufferedReader := bufio.NewReader(cacheFile)
-
-	// 分块读取并排序
-	chunkSize := 10000      // 每个块的大小
-	tempDir := os.TempDir() // 临时文件目录
-	var tempFiles []string
-
-	// 第一阶段：分块排序并写入临时文件
-	chunkIndex := 0
-	for {
-		// 读取一个块的数据
-		chunk := make([]TestResult, 0, chunkSize)
-		decoder := gob.NewDecoder(bufferedReader)
-
-		for i := 0; i < chunkSize; i++ {
-			var result TestResult
-			err := decoder.Decode(&result)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				fmt.Printf("读取结果失败: %v\n", err)
-				continue
-			}
-			chunk = append(chunk, result)
-		}
-
-		if len(chunk) == 0 {
-			break // 没有更多数据
-		}
-
-		// 对块内数据排序
-		sort.Slice(chunk, func(i, j int) bool {
-			if chunk[i].LossRate == chunk[j].LossRate {
-				return chunk[i].AvgLatency < chunk[j].AvgLatency
-			}
-			return chunk[i].LossRate < chunk[j].LossRate
-		})
-
-		// 写入临时文件
-		tempFile := filepath.Join(tempDir, fmt.Sprintf("cfspeed_sort_%d.tmp", chunkIndex))
-		file, err := os.Create(tempFile)
-		if err != nil {
-			fmt.Printf("创建临时文件失败: %v\n", err)
-			return
-		}
-
-		// 使用带缓冲的写入器
-		bufferedWriter := bufio.NewWriter(file)
-
-		encoder := gob.NewEncoder(bufferedWriter)
-		for _, result := range chunk {
-			if err := encoder.Encode(result); err != nil {
-				fmt.Printf("写入临时文件失败: %v\n", err)
-			}
-		}
-
-		// 确保数据写入磁盘
-		bufferedWriter.Flush()
-		file.Close() // 立即关闭文件，而不是使用defer
-
-		tempFiles = append(tempFiles, tempFile)
-		chunkIndex++
-	}
-
-	// 第二阶段：归并排序
+	// 收集已合并的结果
 	var filteredResults []TestResult
+	for _, group := range cidrGroups {
+		if group.Result != nil {
+			// 直接添加 Result 的副本，不需要转换
+			filteredResults = append(filteredResults, *group.Result)
 
-	if len(tempFiles) == 0 {
-		fmt.Println("没有找到有效的测试结果")
-		return
-	} else if len(tempFiles) == 1 {
-		// 只有一个临时文件，直接读取
-		file, err := os.Open(tempFiles[0])
-		if err != nil {
-			fmt.Printf("打开临时文件失败: %v\n", err)
-			return
-		}
-
-		decoder := gob.NewDecoder(file)
-		for {
-			var result TestResult
-			err := decoder.Decode(&result)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				fmt.Printf("读取临时文件失败: %v\n", err)
-				continue
-			}
-
-			// 直接添加结果
-			filteredResults = append(filteredResults, result)
-		}
-
-		file.Close()
-	} else {
-
-		// 创建一个优先队列用于归并
-		type QueueItem struct {
-			result    TestResult
-			fileIndex int
-		}
-
-		queue := make([]QueueItem, 0, len(tempFiles))
-		files := make([]*os.File, len(tempFiles))
-		decoders := make([]*gob.Decoder, len(tempFiles))
-
-		// 初始化，从每个文件读取第一个元素
-		for i, tempFile := range tempFiles {
-			file, err := os.Open(tempFile)
-			if err != nil {
-				fmt.Printf("打开临时文件失败: %v\n", err)
-				continue
-			}
-
-			files[i] = file
-			decoders[i] = gob.NewDecoder(file)
-
-			var result TestResult
-			if err := decoders[i].Decode(&result); err == nil {
-				queue = append(queue, QueueItem{result, i})
-			}
-		}
-
-		// 使用堆排序进行归并
-		for len(queue) > 0 {
-			// 找出最小元素
-			minIdx := 0
-			for i := 1; i < len(queue); i++ {
-				if (queue[i].result.LossRate < queue[minIdx].result.LossRate) ||
-					(queue[i].result.LossRate == queue[minIdx].result.LossRate &&
-						queue[i].result.AvgLatency < queue[minIdx].result.AvgLatency) {
-					minIdx = i
-				}
-			}
-
-			// 添加到结果集
-			filteredResults = append(filteredResults, queue[minIdx].result)
-
-			// 从对应文件读取下一个元素
-			fileIdx := queue[minIdx].fileIndex
-			var nextResult TestResult
-			if err := decoders[fileIdx].Decode(&nextResult); err == nil {
-				// 替换当前元素
-				queue[minIdx].result = nextResult
-			} else {
-				// 文件读完了，从队列中移除
-				queue = append(queue[:minIdx], queue[minIdx+1:]...)
-			}
-		}
-
-		// 关闭所有文件
-		for _, file := range files {
-			if file != nil {
-				file.Close()
-			}
+			// 回收 Result 对象
+			testResultPool.Put(group.Result)
+			group.Result = nil
 		}
 	}
 
-	// 清理临时文件
-	for _, tempFile := range tempFiles {
-		os.Remove(tempFile)
-	}
+	// 过滤结果
+	fmt.Printf("符合条件的结果: %d 个\n", len(filteredResults))
+
+	// 排序结果
+	sort.Slice(filteredResults, func(i, j int) bool {
+		if filteredResults[i].LossRate == filteredResults[j].LossRate {
+			return filteredResults[i].AvgLatency < filteredResults[j].AvgLatency
+		}
+		return filteredResults[i].LossRate < filteredResults[j].LossRate
+	})
 
 	// 限制输出数量
 	if *printCount != "all" {
 		count, err := strconv.Atoi(*printCount)
 		if err == nil && count > 0 {
+			// 只有当结果数量大于指定数量时才截取
 			if count < len(filteredResults) {
 				filteredResults = filteredResults[:count]
 			}
+			// 否则保持原有结果不变
 		}
 	}
 
@@ -647,6 +543,10 @@ func expandCIDRs(cidrList []string) []string {
 			continue
 		}
 
+		// 使用共享 CIDR 字符串
+		sharedCIDR := getSharedCIDR(cidr)
+		expandedList = append(expandedList, sharedCIDR)
+
 		// 判断是IPv4还是IPv6
 		if ipNet.IP.To4() != nil {
 			// IPv4
@@ -732,39 +632,80 @@ func expandIPv6CIDR(ipNet *net.IPNet, ones int) []string {
 		splitBits = 16
 	}
 
-	// 使用big.Int处理IP地址
-	startIP := big.NewInt(0).SetBytes(ipNet.IP.To16())
-
-	// 计算子网间隔 (2^(128-48))
-	subnetStep := big.NewInt(1)
-	subnetStep.Lsh(subnetStep, uint(128-48))
-
 	// 计算需要拆分的子网数量 (2^splitBits)
 	subnetCount := 1 << uint(splitBits)
+
+	// 获取原始 IP 地址的 16 字节表示
+	ip := ipNet.IP.To16()
+	if ip == nil {
+		return nil
+	}
 
 	result := make([]string, 0, subnetCount)
 
 	// 生成所有/48子网
 	for i := 0; i < subnetCount; i++ {
-		// 计算新的IP地址
-		offset := big.NewInt(int64(i))
-		offset.Mul(offset, subnetStep)
+		// 复制原始 IP 地址
+		newIP := make(net.IP, 16)
+		copy(newIP, ip)
 
-		newIP := big.NewInt(0).Add(startIP, offset)
+		// 将子网索引 i 设置到 IP 地址的相应位置
+		// IPv6 地址是 16 字节，每个字节 8 位
+		// ones 是网络前缀长度，我们需要修改从 ones 到 48 的位
 
-		// 转换为IP地址格式
-		ipBytes := newIP.Bytes()
-		if len(ipBytes) < 16 {
-			// 补全到16字节
-			padding := make([]byte, 16-len(ipBytes))
-			ipBytes = append(padding, ipBytes...)
+		// 计算起始字节和位偏移
+		startByte := ones / 8
+		startBit := ones % 8
+
+		// 设置子网索引位
+		remainingBits := splitBits
+		value := i
+
+		// 处理第一个字节（可能需要保留部分位）
+		if startBit > 0 {
+			// 计算第一个字节可以设置的位数
+			bitsInFirstByte := 8 - startBit
+			if bitsInFirstByte > remainingBits {
+				bitsInFirstByte = remainingBits
+			}
+
+			// 创建掩码，保留前 startBit 位
+			mask := byte(0xFF << (8 - startBit))
+
+			// 计算要设置的值
+			valueToSet := byte(value>>(remainingBits-bitsInFirstByte)) << (8 - startBit - bitsInFirstByte)
+
+			// 设置值，保留前 startBit 位
+			newIP[startByte] = (newIP[startByte] & mask) | valueToSet
+
+			remainingBits -= bitsInFirstByte
+			startByte++
 		}
 
-		ip := net.IP(ipBytes)
+		// 处理完整字节
+		for remainingBits >= 8 {
+			newIP[startByte] = byte(value >> (remainingBits - 8))
+			remainingBits -= 8
+			startByte++
+		}
 
-		// 创建新的CIDR字符串
-		newCIDR := fmt.Sprintf("%s/48", ip.String())
-		result = append(result, newCIDR)
+		// 处理最后一个不完整字节
+		if remainingBits > 0 {
+			valueToSet := byte(value&((1<<remainingBits)-1)) << (8 - remainingBits)
+			newIP[startByte] = valueToSet
+		}
+
+		// 将 48 位之后的所有位清零
+		for j := 6; j < 16; j++ {
+			newIP[j] = 0
+		}
+
+		// 创建新的 /48 CIDR
+		newCIDR := &net.IPNet{
+			IP:   newIP,
+			Mask: net.CIDRMask(48, 128),
+		}
+		result = append(result, newCIDR.String())
 	}
 
 	return result
@@ -885,7 +826,7 @@ func generateRandomIPv6Address(ipNet *net.IPNet) string {
 }
 
 // 获取Cloudflare数据中心位置信息
-func getLocationMap() (map[string]location, error) {
+func getLocationMap() (map[string]*location, error) {
 	// 设置最大重试次数
 	maxRetries := 5
 	retryDelay := 2 * time.Second
@@ -942,10 +883,10 @@ func getLocationMap() (map[string]location, error) {
 			continue // 重试
 		}
 
-		// 构造 location 映射，key 为数据中心代码
-		locationMap := make(map[string]location)
-		for _, loc := range locations {
-			locationMap[loc.Iata] = loc
+		// 构造 location 映射，key 为数据中心代码，使用指针
+		locationMap := make(map[string]*location)
+		for i := range locations {
+			locationMap[locations[i].Iata] = &locations[i]
 		}
 
 		// 成功获取数据
@@ -975,39 +916,19 @@ func formatDuration(d time.Duration) string {
 }
 
 // 测试IP性能
-func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int, locationMap map[string]location,
-	coloFlag *string, minLatency, maxLatency *int, maxLossRate *float64, showAll *bool) {
+func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int, locationMap map[string]*location,
+	coloFlag *string, minLatency, maxLatency *int, maxLossRate *float64, showAll *bool) []CIDRGroup {
 	// 初始化并发控制
 	if globalSem == nil {
 		globalSem = semaphore.NewWeighted(int64(maxThreads))
 	}
-
-	// 删除已存在的缓存文件
-	cacheFilePath := filepath.Join(os.TempDir(), "cache_results.bin")
-	os.Remove(cacheFilePath)
-
-	// 创建缓存文件，使用临时目录
-	cacheFile, err := os.Create(cacheFilePath)
-	if err != nil {
-		fmt.Printf("创建缓存文件失败: %v\n", err)
-		return
-	}
-	defer cacheFile.Close()
-
-	// 使用带缓冲的写入器
-	bufferedWriter := bufio.NewWriter(cacheFile)
-	defer bufferedWriter.Flush() // 确保所有数据都被写入
-
-	// 使用 gob
-	encoder := gob.NewEncoder(bufferedWriter)
 
 	// 添加内存管理相关变量
 	var processedGroupCount int32
 	var mutex sync.Mutex
 	var wg sync.WaitGroup
 
-	// 创建一个带缓冲的结果通道，避免阻塞
-	resultChan := make(chan TestResult, maxThreads*2)
+	resultChan := make(chan TestResult, maxThreads)
 
 	// CIDR 完成计数器
 	cidrIPCounts := make(map[string]struct {
@@ -1031,9 +952,9 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 	// CIDR数据中心信息缓存
 	type cidrCache struct {
 		sync.RWMutex
-		dataCenter string
-		region     string
-		city       string
+		dataCenter *string
+		region     *string
+		city       *string
 		found      bool
 	}
 	cidrColoMap := make(map[string]*cidrCache)
@@ -1058,41 +979,42 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 	bar.Set("current", "0")
 	bar.Start()
 
-	// 创建一个全局上下文，用于控制所有goroutine
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel() // 确保在函数返回时取消所有goroutine
+	// 初始化每个 CIDR 组的 Data 字段
+	for i := range cidrGroups {
+		cidrGroups[i].Data = testDataPool.Get().(*CIDRTestData)
+	}
 
 	// 启动结果处理协程
 	go func() {
 		defer close(resultChan)
 		for result := range resultChan {
 			mutex.Lock()
+
 			counts := cidrIPCounts[result.CIDR]
 
 			// 添加结果到临时存储
 			for i := range cidrGroups {
 				if cidrGroups[i].CIDR == result.CIDR {
-					cidrGroups[i].Results = append(cidrGroups[i].Results, result)
+					cidrGroups[i].Data.Results = append(cidrGroups[i].Data.Results, result)
 
-					if len(cidrGroups[i].Results) == counts.total {
-						// 计算平均值并写入文件
-						avgResult := calculateAverageResult(cidrGroups[i].Results)
+					// 使用实际结果数量判断是否完成
+					if len(cidrGroups[i].Data.Results) == counts.total {
+						// 调用 finalize 方法处理结果
+						cidrGroups[i].finalize()
 
-						// 写入文件后清理内存
-						if shouldIncludeResult(avgResult, coloFlag, minLatency, maxLatency, maxLossRate, showAll) {
-							err := encoder.Encode(avgResult)
-							if err != nil {
-								fmt.Printf("写入结果失败: %v\n", err)
-							}
+						// 检查结果是否符合过滤条件
+						if !shouldIncludeResult(TestResult{
+							CIDR:       cidrGroups[i].Result.CIDR,
+							DataCenter: cidrGroups[i].Result.DataCenter,
+							Region:     cidrGroups[i].Result.Region,
+							City:       cidrGroups[i].Result.City,
+							AvgLatency: cidrGroups[i].Result.AvgLatency,
+							LossRate:   cidrGroups[i].Result.LossRate,
+						}, coloFlag, minLatency, maxLatency, maxLossRate, showAll) {
+							cidrGroups[i].Result = nil
 						}
 
-						// 清理内存
-						cidrGroups[i].Results = nil
-						// 清理该CIDR的计数信息
-						delete(cidrIPCounts, result.CIDR)
-						// 清理该CIDR的缓存信息
-						delete(cidrColoMap, result.CIDR)
-
+						// 增加已处理组计数
 						atomic.AddInt32(&processedGroupCount, 1)
 					}
 					break
@@ -1108,14 +1030,6 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 		go func() {
 			defer wg.Done()
 			for {
-				// 检查全局上下文是否已取消
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					// 继续执行
-				}
-
 				// 获取一个未完成的CIDR
 				mutex.Lock()
 				var currentGroup *CIDRGroup
@@ -1134,6 +1048,10 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 				}
 				mutex.Unlock()
 
+				// 使用对象池
+				data := testDataPool.Get().(*CIDRTestData)
+				defer testDataPool.Put(data)
+
 				// 生成并测试一个IP
 				_, ipNet, err := net.ParseCIDR(currentGroup.CIDR)
 				if err != nil {
@@ -1148,36 +1066,24 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 					ip = generateRandomIPv6Address(ipNet)
 				}
 
-				// 创建测试结果
-				result := TestResult{
-					IP:   ip,
-					CIDR: currentGroup.CIDR,
-				}
+				resultObj := testResultPool.Get().(*TestResult)
+				resultObj.Clear() // 清空对象
+
+				// 设置基本信息
+				resultObj.IP = ip
+				resultObj.CIDR = currentGroup.CIDR
 
 				// 执行TCP测试
 				localSuccessCount := 0
 				totalLatency := time.Duration(0)
 				for i := 0; i < testCount; i++ {
-					// 为每个连接创建一个超时上下文
-					connCtx, connCancel := context.WithTimeout(ctx, 1000*time.Millisecond)
-
 					start := time.Now()
-					// 使用 Dialer 结构体来更精细地控制连接行为
-					dialer := net.Dialer{
-						Timeout:   1000 * time.Millisecond, // 超时时间
-						KeepAlive: -1,                      // 禁用 KeepAlive
-						Cancel:    connCtx.Done(),          // 使用上下文的取消信号
-					}
-					conn, err := dialer.DialContext(connCtx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
-
-					// 立即取消连接上下文，避免泄漏
-					connCancel()
-
+					conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, strconv.Itoa(port)), time.Second)
 					if err != nil {
 						continue
 					}
 					latency := time.Since(start)
-					conn.Close() // 确保连接被关闭
+					conn.Close()
 
 					localSuccessCount++
 					totalLatency += latency
@@ -1186,16 +1092,16 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 				if localSuccessCount > 0 {
 					// TCP测试成功
 					avgLatency := totalLatency / time.Duration(localSuccessCount)
-					result.AvgLatency = int(avgLatency.Milliseconds())
-					result.LossRate = float64(testCount-localSuccessCount) / float64(testCount)
+					resultObj.AvgLatency = int(avgLatency.Milliseconds())
+					resultObj.LossRate = float64(testCount-localSuccessCount) / float64(testCount)
 
 					// 检查CIDR是否已有数据中心信息
 					cache := cidrColoMap[currentGroup.CIDR]
 					cache.RLock()
 					if cache.found {
-						result.DataCenter = cache.dataCenter
-						result.Region = cache.region
-						result.City = cache.city
+						resultObj.DataCenter = *cache.dataCenter
+						resultObj.Region = *cache.region
+						resultObj.City = *cache.city
 						cache.RUnlock()
 					} else {
 						cache.RUnlock()
@@ -1203,26 +1109,37 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 						if dataCenter != "Unknown" {
 							cache.Lock()
 							if !cache.found {
-								cache.dataCenter = dataCenter
-								cache.region = region
-								cache.city = city
+								// 查找locationMap中是否有该数据中心
+								if loc, ok := locationMap[dataCenter]; ok {
+									// 使用指针指向locationMap中的数据
+									cache.dataCenter = &dataCenter
+									cache.region = &loc.Region
+									cache.city = &loc.City
+								} else {
+									// 如果locationMap中没有，则创建新的字符串
+									dcCopy := dataCenter
+									regionCopy := region
+									cityCopy := city
+									cache.dataCenter = &dcCopy
+									cache.region = &regionCopy
+									cache.city = &cityCopy
+								}
 								cache.found = true
 							}
 							cache.Unlock()
 						}
-						result.DataCenter = dataCenter
-						result.Region = region
-						result.City = city
+						resultObj.DataCenter = dataCenter
+						resultObj.Region = region
+						resultObj.City = city
 					}
 
 					// 发送结果到结果通道
-					select {
-					case resultChan <- result:
-						atomic.AddInt32(&tcpSuccessCount, 1)
-					case <-ctx.Done():
-						return
-					}
+					resultChan <- *resultObj // 发送副本而不是指针
+					atomic.AddInt32(&tcpSuccessCount, 1)
 				}
+
+				// 将对象放回池中
+				testResultPool.Put(resultObj)
 
 				// 更新进度
 				current := atomic.AddInt32(&processedCount, 1)
@@ -1243,60 +1160,47 @@ func testIPs(cidrGroups []CIDRGroup, port, testCount, maxThreads, ipPerCIDR int,
 	// 计算TCP测试成功率
 	tcpSuccessRate := float64(tcpSuccessCount) / float64(totalIPs) * 100
 	fmt.Printf("TCP测试完成，成功率: %.2f%% (%d/%d)\n", tcpSuccessRate, tcpSuccessCount, totalIPs)
-}
 
-// 计算平均结果的辅助函数
-func calculateAverageResult(results []TestResult) TestResult {
-	if len(results) == 0 {
-		return TestResult{}
+	// 过滤结果时只保留有最终结果的组
+	var filteredGroups []CIDRGroup
+	for _, group := range cidrGroups {
+		// 只保留有Result且不为nil的组
+		if group.Result != nil {
+			filteredGroups = append(filteredGroups, group)
+		} else if group.Data != nil {
+			// 对于没有最终结果的组，确保其Data被放回对象池
+			group.Data.Results = group.Data.Results[:0]
+			group.Data.IPs = group.Data.IPs[:0]
+			testDataPool.Put(group.Data)
+		}
 	}
 
-	var totalLatency int
-	var totalLossRate float64
-
-	for _, r := range results {
-		totalLatency += r.AvgLatency
-		totalLossRate += r.LossRate
-	}
-
-	return TestResult{
-		CIDR:       results[0].CIDR,
-		DataCenter: results[0].DataCenter,
-		Region:     results[0].Region,
-		City:       results[0].City,
-		AvgLatency: totalLatency / len(results),
-		LossRate:   totalLossRate / float64(len(results)),
-	}
+	return filteredGroups
 }
 
 // 获取数据中心信息
-func getDataCenterInfo(ip string, locationMap map[string]location) (string, string, string) {
-	// 使用全局通道控制并发
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-	defer cancel()
+func getDataCenterInfo(ip string, locationMap map[string]*location) (string, string, string) {
 
+	// 使用全局通道控制并发
+	ctx := context.Background()
 	if err := globalSem.Acquire(ctx, 1); err != nil {
 		return "Unknown", "", ""
 	}
 	defer globalSem.Release(1)
 
-	maxRetries := 3 // 重试次数
+	maxRetries := 2                      // 重试次数
+	retryDelay := 800 * time.Millisecond // 添加重试延迟
 
 	// 使用共享的 Transport 对象
 	transport := &http.Transport{
 		DisableKeepAlives: true,
-		IdleConnTimeout:   800 * time.Millisecond,
+		IdleConnTimeout:   1500 * time.Millisecond, // 超时时间
 		MaxIdleConns:      100,
 		MaxConnsPerHost:   10,
-		DialContext: (&net.Dialer{
-			Timeout:   600 * time.Millisecond,
-			KeepAlive: -1,         // 禁用 KeepAlive
-			Cancel:    ctx.Done(), // 使用上下文的取消信号
-		}).DialContext,
 	}
 
 	client := &http.Client{
-		Timeout:   800 * time.Millisecond,
+		Timeout:   1000 * time.Millisecond, // 超时时间
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -1307,12 +1211,16 @@ func getDataCenterInfo(ip string, locationMap map[string]location) (string, stri
 	defer transport.CloseIdleConnections()
 
 	for retry := 0; retry <= maxRetries; retry++ {
+		// 添加重试延迟，第一次尝试不延迟
+		if retry > 0 {
+			time.Sleep(retryDelay)
+		}
 		hostIP := ip
 		if !strings.Contains(ip, ".") {
 			hostIP = "[" + ip + "]"
 		}
 
-		req, err := http.NewRequestWithContext(ctx, "HEAD", "http://cloudflare.com", nil)
+		req, err := http.NewRequest("HEAD", "http://cloudflare.com", nil)
 		if err != nil {
 			continue
 		}
@@ -1626,7 +1534,7 @@ func writeResultsToCSV(results []TestResult, filename string) error {
 	defer writer.Flush()
 
 	// 写入标题行
-	err = writer.Write([]string{"CIDR", "数据中心", "地区", "城市", "平均延迟(ms)", "丢包率(%)"})
+	err = writer.Write([]string{"CIDR", "数据中心", "区域", "城市", "平均延迟", "平均丢包"})
 	if err != nil {
 		return err
 	}
@@ -1763,4 +1671,34 @@ func printResultsSummary(results []TestResult) {
 	resultTable.Render()
 
 	fmt.Println()
+}
+
+// 在计算完平均值后调用
+func (g *CIDRGroup) finalize() {
+	if len(g.Data.Results) > 0 {
+		// 计算平均值
+		var totalLatency int
+		var totalLossRate float64
+		for _, r := range g.Data.Results {
+			totalLatency += r.AvgLatency
+			totalLossRate += r.LossRate
+		}
+
+		// 从对象池获取结果对象
+		g.Result = resultPool.Get().(*TestResult)
+
+		// 填充结果
+		g.Result.CIDR = g.CIDR
+		g.Result.DataCenter = g.Data.Results[0].DataCenter
+		g.Result.Region = g.Data.Results[0].Region
+		g.Result.City = g.Data.Results[0].City
+		g.Result.AvgLatency = totalLatency / len(g.Data.Results)
+		g.Result.LossRate = totalLossRate / float64(len(g.Data.Results))
+
+		// 清理临时数据并放回对象池
+		g.Data.Results = g.Data.Results[:0]
+		g.Data.IPs = g.Data.IPs[:0]
+		testDataPool.Put(g.Data)
+		g.Data = nil
+	}
 }
