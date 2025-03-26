@@ -49,10 +49,10 @@ jobs:
 
       - name: 初始化 Go 模块
         run: |
+          # 在根目录初始化 Go 模块
           go mod init cfspeed
           
           go get github.com/olekukonko/tablewriter
-          go get github.com/klauspost/compress/zstd
           go get github.com/cheggaaa/pb/v3
           go get golang.org/x/sync/semaphore
          
@@ -76,9 +76,9 @@ jobs:
             echo "构建 $OS $ARCH..."
             if [ "$OS" = "linux" ]; then
               # 对 Linux 平台使用静态链接
-              env GOOS=$OS GOARCH=$ARCH $EXTRA_FLAGS CGO_ENABLED=0 go build -ldflags="-s -w" -o "$NAME" cfspeed.go
+              env GOOS=$OS GOARCH=$ARCH $EXTRA_FLAGS CGO_ENABLED=0 go build -ldflags="-s -w" -o "$NAME" .
             else
-              env GOOS=$OS GOARCH=$ARCH $EXTRA_FLAGS go build -ldflags="-s -w" -o "$NAME" cfspeed.go
+              env GOOS=$OS GOARCH=$ARCH $EXTRA_FLAGS go build -ldflags="-s -w" -o "$NAME" .
             fi
             
             upx --best --brute "$NAME" || true
@@ -94,13 +94,13 @@ jobs:
           build_and_compress linux arm
           
           # MIPS
-          env GOOS=linux GOARCH=mips GOMIPS=softfloat CGO_ENABLED=0 go build -ldflags="-s -w" -o cfspeed cfspeed.go
+          env GOOS=linux GOARCH=mips GOMIPS=softfloat CGO_ENABLED=0 go build -ldflags="-s -w" -o cfspeed .
           upx --best --brute cfspeed || true
           tar -czf build/cfspeed_linux_mips.tar.gz cfspeed
           cp cfspeed binaries/cfspeed_linux_mips
           rm cfspeed
           
-          env GOOS=linux GOARCH=mipsle GOMIPS=softfloat CGO_ENABLED=0 go build -ldflags="-s -w" -o cfspeed cfspeed.go
+          env GOOS=linux GOARCH=mipsle GOMIPS=softfloat CGO_ENABLED=0 go build -ldflags="-s -w" -o cfspeed .
           upx --best --brute cfspeed || true
           tar -czf build/cfspeed_linux_mipsle.tar.gz cfspeed
           cp cfspeed binaries/cfspeed_linux_mipsle
