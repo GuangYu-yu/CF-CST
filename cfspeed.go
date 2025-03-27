@@ -86,6 +86,30 @@ var (
 	cidrStringPool sync.Map // CIDR 字符串池
 )
 
+var (
+	// 命令行参数
+	urlFlag     *string
+	fileFlag    *string
+	testCount   *int
+	portFlag    *int
+	ipPerCIDR   *int
+	coloFlag    *string
+	maxLatency  *int
+	minLatency  *int
+	maxLossRate *float64
+	scanThreads *int
+	printCount  *string
+	outFile     *string
+	noCSV       *bool
+	useIPv4     *string
+	useIPv6     *string
+	ipTxtFile   *string
+	noTest      *bool
+	showAll     *bool
+	help        *bool
+	timeoutFlag *string
+)
+
 // 获取共享 CIDR 字符串的函数
 func getSharedCIDR(cidr string) string {
 	if pooledCIDR, ok := cidrStringPool.Load(cidr); ok {
@@ -96,6 +120,29 @@ func getSharedCIDR(cidr string) string {
 }
 
 func init() {
+
+	// 初始化命令行参数
+	urlFlag = flag.String("url", "", "测速的CIDR链接")
+	fileFlag = flag.String("f", "", "指定测速的文件")
+	testCount = flag.Int("t", 4, "延迟测速的次数")
+	portFlag = flag.Int("tp", 443, "指定测速的端口号")
+	ipPerCIDR = flag.Int("ts", 2, "从CIDR内随机选择IP的数量")
+	coloFlag = flag.String("colo", "", "匹配指定数据中心，用逗号分隔，例如 HKG,KHH,NRT,LAX")
+	maxLatency = flag.Int("tl", 500, "平均延迟上限(ms)")
+	minLatency = flag.Int("tll", 0, "平均延迟下限(ms)")
+	maxLossRate = flag.Float64("tlr", 0.5, "丢包率上限")
+	scanThreads = flag.Int("n", 128, "并发数")
+	printCount = flag.String("p", "all", "输出延迟最低的CIDR数量")
+	outFile = flag.String("o", "IP_Speed.csv", "写入结果文件")
+	noCSV = flag.Bool("nocsv", false, "不输出CSV文件")
+	useIPv4 = flag.String("useip4", "", "输出IPv4列表，使用 all 表示输出所有IPv4")
+	useIPv6 = flag.String("useip6", "", "输出IPv6列表，使用 all 表示输出所有IPv6")
+	ipTxtFile = flag.String("iptxt", "ip.txt", "指定IP列表输出文件名")
+	noTest = flag.Bool("notest", false, "不进行测速，只生成随机IP")
+	showAll = flag.Bool("showall", false, "使用后显示所有结果，包括未查询到数据中心的结果")
+	help = flag.Bool("h", false, "打印帮助")
+	timeoutFlag = flag.String("timeout", "", "程序执行超时退出 (例: 5h0m0s，默认: 不使用)")
+
 	// 初始化对象池
 	testDataPool = sync.Pool{
 		New: func() interface{} {
@@ -157,28 +204,30 @@ func shouldIncludeResult(result TestResult, coloFlag *string, minLatency, maxLat
 }
 
 func main() {
-	// 添加全局超时控制
-	defaultTimeout := 5 * time.Hour // 修改默认超时时间为5小时
-	timeoutFlag := flag.String("timeout", defaultTimeout.String(), "程序执行超时时间，格式如：5h30m10s，设置为0则不限制时间")
 
-	// 解析超时时间
-	globalTimeout, err := time.ParseDuration(*timeoutFlag)
-	if err != nil {
-		fmt.Printf("无效的超时时间格式: %s, 使用默认值: %s\n", *timeoutFlag, defaultTimeout)
-		globalTimeout = defaultTimeout
-	}
+	// 解析命令行参数
+	flag.Parse()
 
-	// 创建上下文，如果超时时间为0则不设置超时
+	// 创建一个可取消的上下文
 	var ctx context.Context
 	var cancel context.CancelFunc
-	if globalTimeout > 0 {
-		ctx, cancel = context.WithTimeout(context.Background(), globalTimeout)
-		defer cancel()
-	} else {
+
+	// 解析超时时间
+	if *timeoutFlag == "" {
+		// 不限制运行时间
 		ctx, cancel = context.WithCancel(context.Background())
-		defer cancel()
-		fmt.Println("已设置为不限制执行时间")
+	} else {
+		// 解析超时时间
+		timeout, err := time.ParseDuration(*timeoutFlag)
+		if err != nil {
+			fmt.Printf("解析超时时间失败: %v，将不限制运行时间\n", err)
+			ctx, cancel = context.WithCancel(context.Background())
+		} else {
+			ctx, cancel = context.WithTimeout(context.Background(), timeout)
+			fmt.Printf("程序将在 %s 后自动退出\n", formatDuration(timeout))
+		}
 	}
+	defer cancel()
 
 	// 创建一个通道用于接收程序完成信号
 	done := make(chan bool)
@@ -203,28 +252,6 @@ func main() {
 }
 
 func runMainProgram() {
-	// 定义命令行参数
-	urlFlag := flag.String("url", "", "测速的CIDR链接")
-	fileFlag := flag.String("f", "", "指定测速的文件")
-	testCount := flag.Int("t", 4, "延迟测速的次数")
-	portFlag := flag.Int("tp", 443, "指定测速的端口号")
-	ipPerCIDR := flag.Int("ts", 2, "从CIDR内随机选择IP的数量")
-	coloFlag := flag.String("colo", "", "匹配指定数据中心，用逗号分隔，例如 HKG,KHH,NRT,LAX")
-	maxLatency := flag.Int("tl", 500, "平均延迟上限(ms)")
-	minLatency := flag.Int("tll", 0, "平均延迟下限(ms)")
-	maxLossRate := flag.Float64("tlr", 0.5, "丢包率上限")
-	scanThreads := flag.Int("n", 128, "并发数")
-	printCount := flag.String("p", "all", "输出延迟最低的CIDR数量")
-	outFile := flag.String("o", "IP_Speed.csv", "写入结果文件")
-	noCSV := flag.Bool("nocsv", false, "不输出CSV文件")
-	useIPv4 := flag.String("useip4", "", "输出IPv4列表，使用 all 表示输出所有IPv4")
-	useIPv6 := flag.String("useip6", "", "输出IPv6列表，使用 all 表示输出所有IPv6")
-	ipTxtFile := flag.String("iptxt", "ip.txt", "指定IP列表输出文件名")
-	noTest := flag.Bool("notest", false, "不进行测速，只生成随机IP")
-	showAll := flag.Bool("showall", false, "使用后显示所有结果，包括未查询到数据中心的结果")
-	help := flag.Bool("h", false, "打印帮助")
-
-	flag.Parse()
 
 	// 限制最大并发数
 	if *scanThreads > 1024 {
@@ -316,6 +343,10 @@ func runMainProgram() {
 		}
 	}
 
+	if *timeoutFlag == "" {
+		fmt.Printf("程序将不会超时退出\n")
+	}
+
 	// 测试IP性能
 	cidrGroups = testIPs(cidrGroups, *portFlag, *testCount, *scanThreads, *ipPerCIDR, locationMap,
 		coloFlag, minLatency, maxLatency, maxLossRate, showAll)
@@ -384,7 +415,6 @@ func runMainProgram() {
 
 // 打印帮助信息
 func printHelp() {
-	fmt.Println("\nCloudflare CIDR 测速工具")
 	fmt.Println("\n基本参数:")
 	fmt.Println("  -url string      测速的CIDR链接")
 	fmt.Println("  -f string        指定测速的文件路径 (当未设置-url时使用)")
@@ -392,7 +422,7 @@ func printHelp() {
 	fmt.Println("  -h               显示帮助信息")
 	fmt.Println("  -notest          不进行测速，只生成随机IP (需配合 -useip4 或 -useip6 使用)")
 	fmt.Println("  -showall         使用后显示所有结果，包括未查询到数据中心的结果")
-	fmt.Println("  -timeout string  程序执行超时退出 (默认: 5h0m0s)，设置为 0 则不限制时间")
+	fmt.Println("  -timeout string  程序执行超时退出 (例: 5h0m0s，默认: 不使用)")
 
 	fmt.Println("\n测速参数:")
 	fmt.Println("  -t int           延迟测试次数 (默认: 4)")
