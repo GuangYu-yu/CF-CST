@@ -123,11 +123,6 @@ lazy_static::lazy_static! {
     pub static ref GLOBAL_POOL: DynamicThreadPool = DynamicThreadPool::new();
 }
 
-/// 设置全局并发控制（为了兼容性保留，但不实际使用）
-pub fn set_global_concurrency(_limit: usize) {
-    // 不执行任何操作，因为DynamicThreadPool会自动调整
-}
-
 /// 执行带线程池控制的操作
 pub async fn execute_with_rate_limit<F, Fut, T, E>(f: F) -> Result<T, E>
 where

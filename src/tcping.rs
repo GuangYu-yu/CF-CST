@@ -87,7 +87,6 @@ pub async fn test_ips(
     cidr_groups: Vec<CIDRGroup>,
     port: u16, 
     test_count: usize, 
-    max_threads: usize,  
     ip_per_cidr: usize, 
     location_map: &HashMap<String, Location>,
     colo_flag: &str,
@@ -102,10 +101,10 @@ pub async fn test_ips(
     
     // 创建进度条
     let total_cidrs = cidr_groups.len();
-    println!("共有 {} 个 CIDR 需要测试", total_cidrs);
     
     // 创建进度条
-    let progress_bar = ProgressBar::new(total_cidrs as u64);
+    let total_tests = total_cidrs * ip_per_cidr;
+    let progress_bar = ProgressBar::new(total_tests as u64);
     progress_bar.set_style(ProgressStyle::default_bar()
         .template("{pos}/{len} [{wide_bar}]  [{elapsed_precise}]")
         .unwrap()
@@ -114,12 +113,9 @@ pub async fn test_ips(
     // 启用实时刷新
     progress_bar.enable_steady_tick(std::time::Duration::from_millis(100));
     
-    // 并发处理每个 CIDR
-    let mut processed_groups = Vec::with_capacity(cidr_groups.len());
-    
     // 使用 stream 进行并发处理
-    let mut stream = stream::iter(cidr_groups)
-        .map(|mut group| {
+    let stream = stream::iter(cidr_groups)
+        .map(|group| {
             let location_map = &location_map; // 使用引用
             let shared_state = shared_state.clone(); // 这个克隆是必要的
             let mut rng = rand::rng(); // 如果不需要共享，可以直接使用
@@ -132,7 +128,11 @@ pub async fn test_ips(
                     Ok(net) => net,
                     Err(_) => {
                         println!("无法解析 CIDR: {}", group.cidr);
-                        return group;
+                        return CIDRGroup {
+                            cidr: cidr_str,
+                            result: None,
+                            data: None
+                        };
                     }
                 };
                 
@@ -143,7 +143,7 @@ pub async fn test_ips(
                 };
                 
                 // 生成随机 IP - 预分配容量
-                let mut ips = Vec::with_capacity(ip_per_cidr * 2); // 预留一些额外空间，因为可能有些IP生成失败
+                let mut ips = Vec::with_capacity(ip_per_cidr * 2);
                 
                 if ip_net.is_ipv4() {
                     for _ in 0..ip_per_cidr {
@@ -162,7 +162,11 @@ pub async fn test_ips(
                 // 如果没有生成有效 IP，跳过此 CIDR
                 if ips.is_empty() {
                     println!("无法为 CIDR {} 生成有效 IP", group.cidr);
-                    return group;
+                    return CIDRGroup {
+                        cidr: cidr_str,
+                        result: None,
+                        data: None
+                    };
                 }
                 
                 // 打乱 IP 顺序
@@ -177,6 +181,7 @@ pub async fn test_ips(
                 
                 // 测试每个 IP
                 for ip in &ips {
+                    
                     // 获取数据中心信息
                     let (datacenter, region, city) = get_datacenter_for_ip(ip, &location_map).await;
                     
@@ -184,13 +189,18 @@ pub async fn test_ips(
                     let mut latencies = Vec::with_capacity(test_count);
                     let mut failures = 0;
                     
-                    for _ in 0..test_count {
-                        match execute_with_rate_limit(|| {
-                            let ip = ip.clone();
-                            async move {
-                                tcp_connect(&ip, port, Duration::from_secs(1)).await
-                            }
-                        }).await {
+                    // 并发执行多个测试
+                    let test_futures = (0..test_count).map(|_| {
+                        let ip = ip.clone();
+                        execute_with_rate_limit(|| async move {
+                            tcp_connect(&ip, port, Duration::from_secs(1)).await
+                        })
+                    });
+                    
+                    // 收集测试结果
+                    let results = futures::future::join_all(test_futures).await;
+                    for result in results {
+                        match result {
                             Ok(duration) => {
                                 latencies.push(duration.as_millis() as i32);
                             },
@@ -221,9 +231,14 @@ pub async fn test_ips(
                     };
                     
                     test_data.results.push(result);
+                    
+                    // 更新进度
+                    let count = shared_state.increment_processed_count();
+                    progress_bar.set_position(count as u64);
                 }
                 
                 // 合并结果
+                let mut result_group = group; // 获取所有权
                 if !test_data.results.is_empty() {
                     // 按延迟和丢包率排序
                     test_data.results.sort_by(|a, b| {
@@ -236,37 +251,29 @@ pub async fn test_ips(
                     
                     // 使用引用而不是克隆
                     if should_include_result(&test_data.results[0], colo_flag, min_latency, max_latency, max_loss_rate, show_all) {
-                        group.result = Some(test_data.results[0].clone()); // 这个克隆是必要的
+                        result_group.result = Some(test_data.results[0].clone());
                     }
                 }
                 
-                group.data = Some(test_data);
-                
-                // 更新进度
-                let count = shared_state.increment_processed_count();
-                // 每处理一个CIDR就更新进度条
-                progress_bar.set_position(count as u64);
-                
-                group
+                result_group.data = Some(test_data);
+                result_group
             }
         })
-        .buffer_unordered(max_threads);
+        .buffer_unordered(usize::MAX);
     
     // 收集结果
+    let mut filtered_groups = Vec::new();
+    let mut stream = stream; // 重新绑定以获取所有权
     while let Some(group) = stream.next().await {
-        processed_groups.push(group);
+        if group.result.is_some() {
+            filtered_groups.push(group);
+        }
     }
     
     // 完成进度条
-    progress_bar.finish_with_message("测试完成");
-    
-    // 过滤出有结果的组
-    let filtered_groups: Vec<CIDRGroup> = processed_groups
-        .into_iter()
-        .filter(|group| group.result.is_some())
-        .collect();
-    
-    println!("测试完成，共有 {} 个 CIDR 符合条件", filtered_groups.len());
+    let success_rate = (filtered_groups.len() as f64 / total_cidrs as f64) * 100.0;
+    progress_bar.finish();
+    println!("测试完成 - 成功率: {:.2}%", success_rate);
     
     filtered_groups
 }

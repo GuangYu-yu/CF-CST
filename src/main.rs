@@ -56,11 +56,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run_main_program(args: Args) {
-    // 限制最大并发数
-    let max_concurrent = args.scan_threads;
-
-    // 设置全局并发控制
-    pool::set_global_concurrency(max_concurrent);
 
     // 显示帮助信息
     if args.help {
@@ -176,7 +171,6 @@ async fn run_main_program(args: Args) {
         cidr_groups,
         args.port,
         test_count,
-        max_concurrent,
         args.ip_per_cidr,
         &location_map,
         &args.colo,           // 使用 &str

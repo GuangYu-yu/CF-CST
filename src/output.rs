@@ -454,10 +454,18 @@ pub fn print_results_summary(results: &[TestResult]) {
         Cell::new("最低延迟").style_spec("r"),
     ]));
 
-    for (dc, (count, min_latency, max_latency, total_latency)) in &dc_map {
-        let avg_latency = total_latency / *count as i32;
+    // 将HashMap转换为Vec并按平均延迟排序
+    let mut dc_vec: Vec<_> = dc_map.into_iter().collect();
+    dc_vec.sort_by(|a, b| {
+        let avg_a = a.1.3 / a.1.0 as i32;
+        let avg_b = b.1.3 / b.1.0 as i32;
+        avg_a.cmp(&avg_b)
+    });
+
+    for (dc, (count, min_latency, max_latency, total_latency)) in dc_vec {
+        let avg_latency = total_latency / count as i32;
         table.add_row(Row::new(vec![
-            Cell::new(dc),
+            Cell::new(&dc),
             Cell::new(&format!("{}", count)).style_spec("r"),
             Cell::new(&format!("{}ms", max_latency)).style_spec("r"),
             Cell::new(&format!("{}ms", avg_latency)).style_spec("r"),

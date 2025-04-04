@@ -1,3 +1,11 @@
+macro_rules! print_table_row {
+    ($arg:expr, $type:expr, $desc:expr) => {
+        println!("  {:<10} {:<8} {}", 
+            $arg.green(), 
+            $type.dimmed(), 
+            $desc)
+    };
+}
 use std::env;
 use std::time::Duration;
 
@@ -12,7 +20,6 @@ pub struct Args {
     pub max_latency: i32,
     pub min_latency: i32,
     pub max_loss_rate: f64,
-    pub scan_threads: usize,
     pub print_count: String,
     pub out_file: String,
     pub no_csv: bool,
@@ -23,7 +30,6 @@ pub struct Args {
     pub show_all: bool,
     pub help: bool,
     pub timeout: String,
-    // 添加解析后的超时时间字段
     pub timeout_duration: Option<Duration>,
 }
 
@@ -39,7 +45,6 @@ impl Args {
             max_latency: 500,
             min_latency: 0,
             max_loss_rate: 0.5,
-            scan_threads: 128,
             print_count: "all".to_string(),
             out_file: "IP_Speed.csv".to_string(),
             no_csv: false,
@@ -108,7 +113,6 @@ impl Args {
                     "tl" => parsed.max_latency = args[i + 1].parse().unwrap_or(500),
                     "tll" => parsed.min_latency = args[i + 1].parse().unwrap_or(0),
                     "tlr" => parsed.max_loss_rate = args[i + 1].parse().unwrap_or(0.5),
-                    "n" => parsed.scan_threads = args[i + 1].parse().unwrap_or(128),
                     "p" => parsed.print_count = args[i + 1].clone(),
                     "o" => parsed.out_file = args[i + 1].clone(),
                     "useip4" => parsed.use_ipv4 = args[i + 1].clone(),
@@ -125,11 +129,6 @@ impl Args {
             } else {
                 i += 1;
             }
-        }
-
-        // 限制最大并发数为1024
-        if parsed.scan_threads > 1024 {
-            parsed.scan_threads = 1024;
         }
 
         parsed
@@ -168,37 +167,43 @@ fn parse_duration(duration_str: &str) -> Option<Duration> {
 }
 
 pub fn print_help() {
-    println!("Cfspeed-Rust");
-    println!("\n基本参数:");
-    println!("  -url string      测速的CIDR链接");
-    println!("  -f string        指定测速的文件路径 (当未设置-url时使用)");
-    println!("  -o string        结果文件名 (默认: IP_Speed.csv)");
-    println!("  -h               显示帮助信息");
-    println!("  -notest          不进行测速，只生成随机IP (需配合 -useip4 或 -useip6 使用)");
-    println!("  -showall         使用后显示所有结果，包括未查询到数据中心的结果");
-    println!("  -timeout string  程序执行超时退出 (例: 5h0m0s，默认: 不使用)");
+    use colored::*;
+    
+    println!("{}", "Cfspeed-Rust".bold().blue());
+    
+    // 基本参数
+    println!("\n{}:", "基本参数".bold());
+    print_table_row!("-url", "string", "测速的CIDR链接");
+    print_table_row!("-f", "string", "指定测速的文件路径 (当未设置-url时使用)");
+    print_table_row!("-o", "string", "结果文件名 (默认: IP_Speed.csv)");
+    print_table_row!("-h", "", "显示帮助信息");
+    print_table_row!("-showall", "", "使用后显示所有结果，包括未查询到数据中心的结果");
+    print_table_row!("-timeout", "string", "程序执行超时退出 (例: 5h0m0s，默认: 不使用)");
 
-    println!("\n测速参数:");
-    println!("  -t int           延迟测试次数 (默认: 4)");
-    println!("  -tp int          测试端口号 (默认: 443)");
-    println!("  -ts int          每个CIDR测试的IP数量 (默认: 2)");
-    println!("  -n int           并发测试线程数量 (默认: 128)");
-    println!("\n  注意避免 -t 和 -ts 导致测速量过于庞大！");
+    // 测速参数
+    println!("\n{}:", "测速参数".bold());
+    print_table_row!("-t", "int", "延迟测试次数 (默认: 4)");
+    print_table_row!("-tp", "int", "测试端口号 (默认: 443)");
+    print_table_row!("-ts", "int", "每个CIDR测试的IP数量 (默认: 2)");
+    print_table_row!("-notest", "", "不进行测速，只生成随机IP (需配合 -useip4 或 -useip6 使用)");
+    println!("    {}", "注意避免 -t 和 -ts 导致测速量过于庞大！".red());
 
-    println!("\n筛选参数:");
-    println!("  -colo string     指定数据中心，多个用逗号分隔 (例: HKG,NRT,LAX,SJC)");
-    println!("  -tl int          延迟上限 (默认: 500ms)");
-    println!("  -tll int         延迟下限 (默认: 0ms)");
-    println!("  -tlr float       丢包率上限 (默认: 0.5)");
-    println!("  -p string        输出结果数量 (默认: all)");
+    // 筛选参数
+    println!("\n{}:", "筛选参数".bold());
+    print_table_row!("-colo", "string", "指定数据中心，多个用逗号分隔 (例: HKG,NRT,LAX,SJC)");
+    print_table_row!("-tl", "int", "延迟上限 (默认: 500ms)");
+    print_table_row!("-tll", "int", "延迟下限 (默认: 0ms)");
+    print_table_row!("-tlr", "float", "丢包率上限 (默认: 0.5)");
+    print_table_row!("-p", "string", "输出结果数量 (默认: all)");
 
-    println!("\n输出选项:");
-    println!("  -nocsv           不生成CSV文件 (默认: 不使用)");
-    println!("  -useip4 string   生成IPv4列表 (默认: 不使用)");
-    println!("                   - 使用 all: 输出所有IPv4 CIDR的完整IP列表");
-    println!("                   - 使用数字 (如9999): 输出指定数量的不重复IPv4");
-    println!("  -useip6 string   生成IPv6列表 (默认: 不使用)");
-    println!("                   - 使用数字 (如9999): 输出指定数量的不重复IPv6");
-    println!("  -iptxt string    指定IP列表输出文件名 (默认: ip.txt)");
-    println!("                   - 使用此参数时必须至少使用 -useip4 或 -useip6");
+    // 输出选项
+    println!("\n{}:", "输出选项".bold());
+    print_table_row!("-nocsv", "", "不生成CSV文件 (默认: 不使用)");
+    print_table_row!("-useip4", "string", "生成IPv4列表 (默认: 不使用)");
+    print_table_row!("", "".cyan(), "使用 all: 输出所有IPv4 CIDR的完整IP列表".cyan());
+    print_table_row!("", "".cyan(), "使用数字 (如9999): 输出指定数量的不重复IPv4".cyan());
+    print_table_row!("-useip6", "string", "生成IPv6列表 (默认: 不使用)");
+    print_table_row!("", "".cyan(), "使用数字 (如9999): 输出指定数量的不重复IPv6".cyan());
+    print_table_row!("-iptxt", "string", "指定IP列表输出文件名 (默认: ip.txt)");
+    print_table_row!("", "".cyan(), "使用此参数时必须至少使用 -useip4 或 -useip6".cyan());
 }
