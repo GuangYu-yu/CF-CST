@@ -168,6 +168,7 @@ fn parse_duration(duration_str: &str) -> Option<Duration> {
 }
 
 pub fn print_help() {
+    println!("Cfspeed-Rust");
     println!("\n基本参数:");
     println!("  -url string      测速的CIDR链接");
     println!("  -f string        指定测速的文件路径 (当未设置-url时使用)");
