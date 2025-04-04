@@ -37,92 +37,9 @@ jobs:
                 }
               }
             }
-
-  build_linux_amd64:
-    name: 构建 Linux AMD64
-    runs-on: ubuntu-latest
-    needs: delete_releases
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 设置 Rust 环境
-        uses: actions-rust-lang/setup-rust-toolchain@v1.11.0
-        with:
-          rust-version: '1.82.0'
-
-      - name: 安装依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y upx musl-tools
-
-      - name: 安装 musl 目标
-        run: |
-          rustup target add x86_64-unknown-linux-musl
-
-      - name: 构建 Linux x86_64
-        run: |
-          mkdir -p build
-          mkdir -p binaries
-          
-          # 构建 Linux x86_64
-          cargo build --release --target x86_64-unknown-linux-musl
-          cp target/x86_64-unknown-linux-musl/release/cfspeed cfspeed
-          
-          upx --best --brute cfspeed || true
-          tar -czf "build/cfspeed_linux_x86_64.tar.gz" cfspeed
-          cp cfspeed "binaries/cfspeed_linux_x86_64"
-          rm cfspeed
-
-      - name: 上传构建产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-amd64-build
-          path: |
-            build/*.tar.gz
-            binaries/*
-
-  build_linux_arm64:
-    name: 构建 Linux ARM64
-    runs-on: ubuntu-latest
-    needs: delete_releases
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 设置 Rust 环境
-        uses: actions-rust-lang/setup-rust-toolchain@v1.11.0
-        with:
-          rust-version: '1.82.0'
-
-      - name: 安装 cross
-        run: |
-          cargo install cross
-
-      - name: 构建 Linux ARM64
-        run: |
-          mkdir -p build
-          mkdir -p binaries
-          
-          # 使用 cross 构建 Linux ARM64
-          cross build --release --target aarch64-unknown-linux-musl
-          cp target/aarch64-unknown-linux-musl/release/cfspeed cfspeed
-          
-          upx --best --brute cfspeed || true
-          tar -czf "build/cfspeed_linux_aarch64.tar.gz" cfspeed
-          cp cfspeed "binaries/cfspeed_linux_aarch64"
-          rm cfspeed
-
-      - name: 上传构建产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-arm64-build
-          path: |
-            build/*.tar.gz
-            binaries/*
-
-  build_windows:
-    name: 构建 Windows
+            
+  build_all:
+    name: 构建全平台
     runs-on: ubuntu-latest
     needs: delete_releases
     steps:
@@ -140,100 +57,32 @@ jobs:
 
       - name: 构建 Windows
         run: |
-          mkdir -p build
-          mkdir -p binaries
-          
-          # 使用 cross 构建 Windows x86_64
+          mkdir -p build/windows
           cross build --release --target x86_64-pc-windows-gnu
-          cp target/x86_64-pc-windows-gnu/release/cfspeed.exe cfspeed.exe
-          
-          upx --best --brute cfspeed.exe || true
-          tar -czf build/cfspeed_windows_x86_64.tar.gz cfspeed.exe
-          cp cfspeed.exe binaries/cfspeed_windows_x86_64.exe
-          rm cfspeed.exe
+          cp target/x86_64-pc-windows-gnu/release/cfspeed.exe build/windows/cfspeed.exe
+          tar -czf build/cfspeed_windows_x86_64.tar.gz -C build/windows cfspeed.exe
 
-      - name: 上传构建产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-build
-          path: |
-            build/*.tar.gz
-            binaries/*
-
-  build_macos:
-    name: 构建 macOS
-    runs-on: macos-latest
-    needs: delete_releases
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 设置 Rust 环境
-        uses: actions-rust-lang/setup-rust-toolchain@v1.11.0
-        with:
-          rust-version: '1.82.0'
-
-      - name: 安装 UPX
+      - name: 构建 Linux AMD64
         run: |
-          brew install upx
+          mkdir -p build/linux-amd64
+          cross build --release --target x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/cfspeed build/linux-amd64/cfspeed
+          tar -czf build/cfspeed_linux_x86_64.tar.gz -C build/linux-amd64 cfspeed
+
+      - name: 构建 Linux ARM64
+        run: |
+          mkdir -p build/linux-arm64
+          cross build --release --target aarch64-unknown-linux-musl
+          cp target/aarch64-unknown-linux-musl/release/cfspeed build/linux-arm64/cfspeed
+          tar -czf build/cfspeed_linux_aarch64.tar.gz -C build/linux-arm64 cfspeed
 
       - name: 构建 macOS
+        runs-on: macos-latest
         run: |
-          mkdir -p build
-          mkdir -p binaries
-          
-          # 构建 macOS x86_64
+          mkdir -p build/macos
           cargo build --release
-          cp target/release/cfspeed cfspeed
-          
-          upx --best --brute cfspeed || true
-          tar -czf "build/cfspeed_darwin_x86_64.tar.gz" cfspeed
-          cp cfspeed "binaries/cfspeed_darwin_x86_64"
-          rm cfspeed
-
-      - name: 上传构建产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-build
-          path: |
-            build/*.tar.gz
-            binaries/*
-
-  create_release:
-    name: 创建发布版本
-    runs-on: ubuntu-latest
-    needs: [build_linux_amd64, build_linux_arm64, build_windows, build_macos]
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 下载所有构建产物
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: 准备发布文件
-        run: |
-          mkdir -p build
-          mkdir -p binaries
-          
-          # 复制所有构建产物
-          cp -r artifacts/linux-amd64-build/build/* build/ || true
-          cp -r artifacts/linux-amd64-build/binaries/* binaries/ || true
-          
-          cp -r artifacts/linux-arm64-build/build/* build/ || true
-          cp -r artifacts/linux-arm64-build/binaries/* binaries/ || true
-          
-          cp -r artifacts/windows-build/build/* build/ || true
-          cp -r artifacts/windows-build/binaries/* binaries/ || true
-          
-          cp -r artifacts/macos-build/build/* build/ || true
-          cp -r artifacts/macos-build/binaries/* binaries/ || true
-          
-          # 生成校验和
-          cd build
-          sha256sum * > sha256sum.txt
-          cd ..
+          cp target/release/cfspeed build/macos/cfspeed
+          tar -czf build/cfspeed_darwin_x86_64.tar.gz -C build/macos cfspeed
 
       - name: 提交并推送更改
         if: success()
@@ -251,22 +100,22 @@ jobs:
             fi
           fi
 
-      - name: 上传构建产物
+      - name: 上传构建产物  
         uses: actions/upload-artifact@v4
-        with:
-          name: cfspeed-构建产物
-          path: build/*
+        with:  
+          name: cfspeed-构建产物  
+          path: build/*  
 
-      - name: 创建发布版本
+      - name: 创建发布版本  
         uses: softprops/action-gh-release@v2
-        if: github.event_name == 'workflow_dispatch'
-        with:
-          tag_name: v${{ github.run_number }}
-          name: Cloudflare CIDR 测速工具 v${{ github.run_number }}
-          draft: false
-          prerelease: false
-          files: |
-            build/*.tar.gz
-            build/sha256sum.txt
-        env:
+        if: github.event_name == 'workflow_dispatch'  
+        with:  
+          tag_name: v${{ github.run_number }}  
+          name: Cloudflare CIDR 测速工具 v${{ github.run_number }}  
+          draft: false  
+          prerelease: false  
+          files: |  
+            build/*.tar.gz  
+            build/sha256sum.txt  
+        env:  
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
