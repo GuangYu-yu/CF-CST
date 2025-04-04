@@ -123,7 +123,7 @@ jobs:
 
   build_windows:
     name: 构建 Windows
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     needs: delete_releases
     steps:
       - name: 检出代码
@@ -133,25 +133,24 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1.11.0
         with:
           rust-version: '1.82.0'
-          target: x86_64-pc-windows-msvc
 
-      - name: 安装 UPX
+      - name: 安装 cross
         run: |
-          choco install upx -y
+          cargo install cross
 
       - name: 构建 Windows
         run: |
           mkdir -p build
           mkdir -p binaries
           
-          # 使用 MSVC 工具链构建 Windows x86_64
-          cargo build --release --target x86_64-pc-windows-msvc
-          copy target\x86_64-pc-windows-msvc\release\cfspeed.exe cfspeed.exe
+          # 使用 cross 构建 Windows x86_64
+          cross build --release --target x86_64-pc-windows-gnu
+          cp target/x86_64-pc-windows-gnu/release/cfspeed.exe cfspeed.exe
           
           upx --best --brute cfspeed.exe || true
           tar -czf build/cfspeed_windows_x86_64.tar.gz cfspeed.exe
-          copy cfspeed.exe binaries\cfspeed_windows_x86_64.exe
-          del cfspeed.exe
+          cp cfspeed.exe binaries/cfspeed_windows_x86_64.exe
+          rm cfspeed.exe
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
