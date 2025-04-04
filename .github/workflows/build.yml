@@ -57,9 +57,6 @@ jobs:
           cross build --release --target x86_64-pc-windows-gnu
           cp target/x86_64-pc-windows-gnu/release/cfspeed.exe build/windows/cfspeed.exe
 
-      - name: 压缩 Windows 可执行文件
-        run: |
-          upx --best --brute build/windows/cfspeed.exe
 
       - name: 打包 Windows 可执行文件
         run: |
@@ -71,9 +68,6 @@ jobs:
           cross build --release --target x86_64-unknown-linux-musl
           cp target/x86_64-unknown-linux-musl/release/cfspeed build/linux-amd64/cfspeed
 
-      - name: 压缩 Linux AMD64 可执行文件
-        run: |
-          upx --best --brute build/linux-amd64/cfspeed
 
       - name: 打包 Linux AMD64 可执行文件
         run: |
@@ -85,9 +79,6 @@ jobs:
           cross build --release --target aarch64-unknown-linux-musl
           cp target/aarch64-unknown-linux-musl/release/cfspeed build/linux-arm64/cfspeed
 
-      - name: 压缩 Linux ARM64 可执行文件
-        run: |
-          upx --best --brute build/linux-arm64/cfspeed
 
       - name: 打包 Linux ARM64 可执行文件
         run: |
@@ -111,9 +102,6 @@ jobs:
           cargo build --release
           cp target/release/cfspeed build/macos/cfspeed
 
-      - name: 压缩 macOS 可执行文件
-        run: |
-          upx --best --brute build/macos/cfspeed
 
       - name: 打包 macOS 可执行文件
         run: |
