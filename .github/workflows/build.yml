@@ -2,11 +2,15 @@ name: 构建 cfspeed
 on:  
   workflow_dispatch:   # 允许手动触发
 
-jobs:
-  delete_releases:
-    name: 删除旧版本
-    runs-on: ubuntu-latest
-    steps:
+jobs:  
+  build:  
+    name: 构建  
+    runs-on: ubuntu-latest  
+
+    steps:  
+      - name: 检出代码  
+        uses: actions/checkout@v4  
+
       - name: 删除旧版本
         uses: actions/github-script@v7
         with:
@@ -30,21 +34,13 @@ jobs:
                   await github.rest.git.deleteRef({
                     owner,
                     repo,
-                    ref: `tags/${release.tag_name}` 
+                    ref: `tags/${release.tag_name}`
                   });
                 } catch (e) {
                   console.log(`Failed to delete tag ${release.tag_name}: ${e}`);
                 }
               }
             }
-            
-  build_all:
-    name: 构建全平台
-    runs-on: ubuntu-latest
-    needs: delete_releases
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
 
       - name: 设置 Rust 环境
         uses: actions-rust-lang/setup-rust-toolchain@v1.11.0
@@ -60,21 +56,18 @@ jobs:
           mkdir -p build/windows
           cross build --release --target x86_64-pc-windows-gnu
           cp target/x86_64-pc-windows-gnu/release/cfspeed.exe build/windows/cfspeed.exe
-          tar -czf build/cfspeed_windows_x86_64.tar.gz -C build/windows cfspeed.exe
 
       - name: 构建 Linux AMD64
         run: |
           mkdir -p build/linux-amd64
           cross build --release --target x86_64-unknown-linux-musl
           cp target/x86_64-unknown-linux-musl/release/cfspeed build/linux-amd64/cfspeed
-          tar -czf build/cfspeed_linux_x86_64.tar.gz -C build/linux-amd64 cfspeed
 
       - name: 构建 Linux ARM64
         run: |
           mkdir -p build/linux-arm64
           cross build --release --target aarch64-unknown-linux-musl
           cp target/aarch64-unknown-linux-musl/release/cfspeed build/linux-arm64/cfspeed
-          tar -czf build/cfspeed_linux_aarch64.tar.gz -C build/linux-arm64 cfspeed
 
       - name: 构建 macOS
         runs-on: macos-latest
@@ -82,6 +75,19 @@ jobs:
           mkdir -p build/macos
           cargo build --release
           cp target/release/cfspeed build/macos/cfspeed
+
+      - name: 压缩可执行文件
+        run: |
+          upx --best --brute build/windows/cfspeed.exe
+          upx --best --brute build/linux-amd64/cfspeed
+          upx --best --brute build/linux-arm64/cfspeed
+          upx --best --brute build/macos/cfspeed
+
+      - name: 打包可执行文件
+        run: |
+          tar -czf build/cfspeed_windows_x86_64.tar.gz -C build/windows cfspeed.exe
+          tar -czf build/cfspeed_linux_x86_64.tar.gz -C build/linux-amd64 cfspeed
+          tar -czf build/cfspeed_linux_aarch64.tar.gz -C build/linux-arm64 cfspeed
           tar -czf build/cfspeed_darwin_x86_64.tar.gz -C build/macos cfspeed
 
       - name: 提交并推送更改
