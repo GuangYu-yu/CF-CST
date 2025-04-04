@@ -63,10 +63,20 @@ jobs:
   build_macos:
     name: 构建 macOS
     runs-on: macos-latest
-    run: |
-      mkdir -p build/macos
-      cargo build --release
-      cp target/release/cfspeed build/macos/cfspeed
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Rust 环境
+        uses: actions-rust-lang/setup-rust-toolchain@v1.11.0
+        with:
+          rust-version: '1.82.0'
+
+      - name: 构建 macOS
+        run: |
+          mkdir -p build/macos
+          cargo build --release
+          cp target/release/cfspeed build/macos/cfspeed
 
       - name: 压缩可执行文件
         run: |
