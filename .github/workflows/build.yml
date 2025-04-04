@@ -55,17 +55,17 @@ jobs:
         run: |
           mkdir -p build/windows
           cross build --release --target x86_64-pc-windows-gnu
-          cp target/x86_64-pc-windows-gnu/release/cfspeed.exe build/windows/cfspeed.exe
+          cp target/x86_64-pc-windows-gnu/release/cfspeed.exe build/windows/cfspeed_windows_x86_64.exe
 
       - name: 打包 Windows 可执行文件
         run: |
-          tar -czf build/cfspeed_windows_x86_64.tar.gz -C build/windows cfspeed.exe
+          tar -czf build/cfspeed_windows_x86_64.tar.gz -C build/windows cfspeed_windows_x86_64.exe
 
       - name: 提交并推送 Windows 可执行文件
         if: success()
         run: |
           mkdir -p binaries
-          cp build/windows/cfspeed.exe binaries/
+          cp build/windows/cfspeed_windows_x86_64.exe binaries/
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
@@ -81,17 +81,17 @@ jobs:
         run: |
           mkdir -p build/linux-amd64
           cross build --release --target x86_64-unknown-linux-musl
-          cp target/x86_64-unknown-linux-musl/release/cfspeed build/linux-amd64/cfspeed
+          cp target/x86_64-unknown-linux-musl/release/cfspeed build/linux-amd64/cfspeed_linux_amd64
 
       - name: 打包 Linux AMD64 可执行文件
         run: |
-          tar -czf build/cfspeed_linux_x86_64.tar.gz -C build/linux-amd64 cfspeed
+          tar -czf build/cfspeed_linux_amd64.tar.gz -C build/linux-amd64 cfspeed_linux_amd64
 
       - name: 提交并推送 Linux AMD64 可执行文件
         if: success()
         run: |
           mkdir -p binaries
-          cp build/linux-amd64/cfspeed binaries/
+          cp build/linux-amd64/cfspeed_linux_amd64 binaries/
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
@@ -107,17 +107,17 @@ jobs:
         run: |
           mkdir -p build/linux-arm64
           cross build --release --target aarch64-unknown-linux-musl
-          cp target/aarch64-unknown-linux-musl/release/cfspeed build/linux-arm64/cfspeed
+          cp target/aarch64-unknown-linux-musl/release/cfspeed build/linux-arm64/cfspeed_linux_arm64
 
       - name: 打包 Linux ARM64 可执行文件
         run: |
-          tar -czf build/cfspeed_linux_aarch64.tar.gz -C build/linux-arm64 cfspeed
+          tar -czf build/cfspeed_linux_arm64.tar.gz -C build/linux-arm64 cfspeed_linux_arm64
 
       - name: 提交并推送 Linux ARM64 可执行文件
         if: success()
         run: |
           mkdir -p binaries
-          cp build/linux-arm64/cfspeed binaries/
+          cp build/linux-arm64/cfspeed_linux_arm64 binaries/
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
@@ -145,17 +145,17 @@ jobs:
         run: |
           mkdir -p build/macos
           cargo build --release
-          cp target/release/cfspeed build/macos/cfspeed
+          cp target/release/cfspeed build/macos/cfspeed_macos_x86_64
 
       - name: 打包 macOS 可执行文件
         run: |
-          tar -czf build/cfspeed_darwin_x86_64.tar.gz -C build/macos cfspeed
+          tar -czf build/cfspeed_macos_x86_64.tar.gz -C build/macos cfspeed_macos_x86_64
 
       - name: 提交并推送 macOS 可执行文件
         if: success()
         run: |
           mkdir -p binaries
-          cp build/macos/cfspeed binaries/
+          cp build/macos/cfspeed_macos_x86_64 binaries/
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
