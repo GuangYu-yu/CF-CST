@@ -47,18 +47,51 @@ jobs:
         with:
           rust-version: '1.82.0'
 
-      - name: 安装 cross 和 GNU Parallel
+      - name: 安装 cross
         run: |
           cargo install cross
-          sudo apt-get update
-          sudo apt-get install -y parallel
 
-      - name: 并行构建
+      - name: 构建 Windows
         run: |
-          parallel ::: \
-          "mkdir -p build/windows && cross build --release --target x86_64-pc-windows-gnu && cp target/x86_64-pc-windows-gnu/release/cfspeed.exe build/windows/cfspeed.exe" \
-          "mkdir -p build/linux-amd64 && cross build --release --target x86_64-unknown-linux-musl && cp target/x86_64-unknown-linux-musl/release/cfspeed build/linux-amd64/cfspeed" \
-          "mkdir -p build/linux-arm64 && cross build --release --target aarch64-unknown-linux-musl && cp target/aarch64-unknown-linux-musl/release/cfspeed build/linux-arm64/cfspeed"
+          mkdir -p build/windows
+          cross build --release --target x86_64-pc-windows-gnu
+          cp target/x86_64-pc-windows-gnu/release/cfspeed.exe build/windows/cfspeed.exe
+
+      - name: 压缩 Windows 可执行文件
+        run: |
+          upx --best --brute build/windows/cfspeed.exe
+
+      - name: 打包 Windows 可执行文件
+        run: |
+          tar -czf build/cfspeed_windows_x86_64.tar.gz -C build/windows cfspeed.exe
+
+      - name: 构建 Linux AMD64
+        run: |
+          mkdir -p build/linux-amd64
+          cross build --release --target x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/cfspeed build/linux-amd64/cfspeed
+
+      - name: 压缩 Linux AMD64 可执行文件
+        run: |
+          upx --best --brute build/linux-amd64/cfspeed
+
+      - name: 打包 Linux AMD64 可执行文件
+        run: |
+          tar -czf build/cfspeed_linux_x86_64.tar.gz -C build/linux-amd64 cfspeed
+
+      - name: 构建 Linux ARM64
+        run: |
+          mkdir -p build/linux-arm64
+          cross build --release --target aarch64-unknown-linux-musl
+          cp target/aarch64-unknown-linux-musl/release/cfspeed build/linux-arm64/cfspeed
+
+      - name: 压缩 Linux ARM64 可执行文件
+        run: |
+          upx --best --brute build/linux-arm64/cfspeed
+
+      - name: 打包 Linux ARM64 可执行文件
+        run: |
+          tar -czf build/cfspeed_linux_aarch64.tar.gz -C build/linux-arm64 cfspeed
 
   build_macos:
     name: 构建 macOS
@@ -78,18 +111,19 @@ jobs:
           cargo build --release
           cp target/release/cfspeed build/macos/cfspeed
 
+      - name: 压缩 macOS 可执行文件
+        run: |
+          upx --best --brute build/macos/cfspeed
+
+      - name: 打包 macOS 可执行文件
+        run: |
+          tar -czf build/cfspeed_darwin_x86_64.tar.gz -C build/macos cfspeed
+
   post_build:
     name: 后处理
     runs-on: ubuntu-latest
     needs: [build_linux_windows, build_macos]
     steps:
-      - name: 压缩可执行文件
-        run: |
-          upx --best --brute build/windows/cfspeed.exe
-          upx --best --brute build/linux-amd64/cfspeed
-          upx --best --brute build/linux-arm64/cfspeed
-          upx --best --brute build/macos/cfspeed
-
       - name: 提交并推送压缩后的可执行文件
         if: success()
         run: |
@@ -108,13 +142,6 @@ jobs:
             git commit -m "更新压缩后的二进制文件 ${current_time}"
             git push
           fi
-
-      - name: 打包可执行文件
-        run: |
-          tar -czf build/cfspeed_windows_x86_64.tar.gz -C build/windows cfspeed.exe
-          tar -czf build/cfspeed_linux_x86_64.tar.gz -C build/linux-amd64 cfspeed
-          tar -czf build/cfspeed_linux_aarch64.tar.gz -C build/linux-arm64 cfspeed
-          tar -czf build/cfspeed_darwin_x86_64.tar.gz -C build/macos cfspeed
 
       - name: 上传构建产物  
         uses: actions/upload-artifact@v4
