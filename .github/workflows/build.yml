@@ -3,8 +3,8 @@ on:
   workflow_dispatch:   # 允许手动触发
 
 jobs:  
-  build:  
-    name: 构建  
+  build_linux_windows:  
+    name: 构建 Linux 和 Windows
     runs-on: ubuntu-latest  
 
     steps:  
@@ -60,12 +60,13 @@ jobs:
           "mkdir -p build/linux-amd64 && cross build --release --target x86_64-unknown-linux-musl && cp target/x86_64-unknown-linux-musl/release/cfspeed build/linux-amd64/cfspeed" \
           "mkdir -p build/linux-arm64 && cross build --release --target aarch64-unknown-linux-musl && cp target/aarch64-unknown-linux-musl/release/cfspeed build/linux-arm64/cfspeed"
 
-      - name: 构建 macOS
-        runs-on: macos-latest
-        run: |
-          mkdir -p build/macos
-          cargo build --release
-          cp target/release/cfspeed build/macos/cfspeed
+  build_macos:
+    name: 构建 macOS
+    runs-on: macos-latest
+    run: |
+      mkdir -p build/macos
+      cargo build --release
+      cp target/release/cfspeed build/macos/cfspeed
 
       - name: 压缩可执行文件
         run: |
