@@ -43,7 +43,7 @@ jobs:
             }
 
       - name: 设置 Rust 环境  
-        uses: actions/setup-rust@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1.11.0
         with:  
           rust-version: '1.82.0'
 
