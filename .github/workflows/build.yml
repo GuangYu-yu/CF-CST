@@ -47,27 +47,18 @@ jobs:
         with:
           rust-version: '1.82.0'
 
-      - name: 安装 cross
+      - name: 安装 cross 和 GNU Parallel
         run: |
           cargo install cross
+          sudo apt-get update
+          sudo apt-get install -y parallel
 
-      - name: 构建 Windows
+      - name: 并行构建
         run: |
-          mkdir -p build/windows
-          cross build --release --target x86_64-pc-windows-gnu
-          cp target/x86_64-pc-windows-gnu/release/cfspeed.exe build/windows/cfspeed.exe
-
-      - name: 构建 Linux AMD64
-        run: |
-          mkdir -p build/linux-amd64
-          cross build --release --target x86_64-unknown-linux-musl
-          cp target/x86_64-unknown-linux-musl/release/cfspeed build/linux-amd64/cfspeed
-
-      - name: 构建 Linux ARM64
-        run: |
-          mkdir -p build/linux-arm64
-          cross build --release --target aarch64-unknown-linux-musl
-          cp target/aarch64-unknown-linux-musl/release/cfspeed build/linux-arm64/cfspeed
+          parallel ::: \
+          "mkdir -p build/windows && cross build --release --target x86_64-pc-windows-gnu && cp target/x86_64-pc-windows-gnu/release/cfspeed.exe build/windows/cfspeed.exe" \
+          "mkdir -p build/linux-amd64 && cross build --release --target x86_64-unknown-linux-musl && cp target/x86_64-unknown-linux-musl/release/cfspeed build/linux-amd64/cfspeed" \
+          "mkdir -p build/linux-arm64 && cross build --release --target aarch64-unknown-linux-musl && cp target/aarch64-unknown-linux-musl/release/cfspeed build/linux-arm64/cfspeed"
 
       - name: 构建 macOS
         runs-on: macos-latest
@@ -83,6 +74,25 @@ jobs:
           upx --best --brute build/linux-arm64/cfspeed
           upx --best --brute build/macos/cfspeed
 
+      - name: 提交并推送压缩后的可执行文件
+        if: success()
+        run: |
+          mkdir -p binaries
+          cp build/windows/cfspeed.exe binaries/
+          cp build/linux-amd64/cfspeed binaries/
+          cp build/linux-arm64/cfspeed binaries/
+          cp build/macos/cfspeed binaries/
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git pull origin main --no-rebase || git pull origin master --no-rebase
+          git add binaries/
+          current_time=$(date '+%Y/%m/%d %H:%M:%S')
+          if ! git diff --staged --quiet; then
+            git commit -m "更新压缩后的二进制文件 ${current_time}"
+            git push
+          fi
+
       - name: 打包可执行文件
         run: |
           tar -czf build/cfspeed_windows_x86_64.tar.gz -C build/windows cfspeed.exe
@@ -90,27 +100,11 @@ jobs:
           tar -czf build/cfspeed_linux_aarch64.tar.gz -C build/linux-arm64 cfspeed
           tar -czf build/cfspeed_darwin_x86_64.tar.gz -C build/macos cfspeed
 
-      - name: 提交并推送更改
-        if: success()
-        run: |
-          if [ -d "binaries" ]; then
-            git config --local user.email "action@github.com"
-            git config --local user.name "GitHub Action"
-            git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-            git pull origin main --no-rebase || git pull origin master --no-rebase
-            git add binaries/
-            current_time=$(date '+%Y/%m/%d %H:%M:%S')
-            if ! git diff --staged --quiet; then
-              git commit -m "更新二进制文件 ${current_time}"
-              git push
-            fi
-          fi
-
       - name: 上传构建产物  
         uses: actions/upload-artifact@v4
         with:  
           name: cfspeed-构建产物  
-          path: build/*  
+          path: build/*.tar.gz  
 
       - name: 创建发布版本  
         uses: softprops/action-gh-release@v2
