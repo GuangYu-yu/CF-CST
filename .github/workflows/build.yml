@@ -47,15 +47,9 @@ jobs:
         with:  
           rust-version: '1.82.0'
 
-      - name: 安装依赖
+      - name: 安装 cross
         run: |
-          sudo apt-get update
-          sudo apt-get install -y upx musl-tools gcc-aarch64-linux-gnu
-
-      - name: 安装 musl 目标
-        run: |
-          rustup target add x86_64-unknown-linux-musl
-          rustup target add aarch64-unknown-linux-musl
+          cargo install cross
 
       - name: 构建所有平台  
         run: |  
@@ -70,8 +64,8 @@ jobs:
             
             echo "构建 $OS $ARCH..."
             if [ "$OS" = "linux" ]; then
-              # 对 Linux 平台使用静态链接
-              cargo build --release --target $ARCH-unknown-linux-musl
+              # 使用 cross 进行交叉编译
+              cross build --release --target $ARCH-unknown-linux-musl
               cp target/$ARCH-unknown-linux-musl/release/cfspeed "$NAME"
             else
               cargo build --release --target $ARCH-unknown-$OS
