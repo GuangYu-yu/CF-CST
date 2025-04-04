@@ -2,15 +2,11 @@ name: 构建 cfspeed
 on:  
   workflow_dispatch:   # 允许手动触发
 
-jobs:  
-  build:  
-    name: 构建  
-    runs-on: ubuntu-latest  
-
-    steps:  
-      - name: 检出代码  
-        uses: actions/checkout@v4  
-
+jobs:
+  delete_releases:
+    name: 删除旧版本
+    runs-on: ubuntu-latest
+    steps:
       - name: 删除旧版本
         uses: actions/github-script@v7
         with:
@@ -42,56 +38,207 @@ jobs:
               }
             }
 
-      - name: 设置 Rust 环境  
+  build_linux_amd64:
+    name: 构建 Linux AMD64
+    runs-on: ubuntu-latest
+    needs: delete_releases
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Rust 环境
         uses: actions-rust-lang/setup-rust-toolchain@v1.11.0
-        with:  
+        with:
           rust-version: '1.82.0'
 
-      - name: 安装 cross
+      - name: 安装依赖
         run: |
-          cargo install cross
+          sudo apt-get update
+          sudo apt-get install -y upx musl-tools
 
-      - name: 构建所有平台  
-        run: |  
+      - name: 安装 musl 目标
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: 构建 Linux x86_64
+        run: |
           mkdir -p build
           mkdir -p binaries
+          
+          # 构建 Linux x86_64
+          cargo build --release --target x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/cfspeed cfspeed
+          
+          upx --best --brute cfspeed || true
+          tar -czf "build/cfspeed_linux_x86_64.tar.gz" cfspeed
+          cp cfspeed "binaries/cfspeed_linux_x86_64"
+          rm cfspeed
 
-          build_and_compress() {
-            local OS=$1
-            local ARCH=$2
-            local SUFFIX=$3
-            local NAME="cfspeed${SUFFIX}"
-            
-            echo "构建 $OS $ARCH..."
-            if [ "$OS" = "linux" ]; then
-              # 使用 cross 进行交叉编译
-              cross build --release --target $ARCH-unknown-linux-musl
-              cp target/$ARCH-unknown-linux-musl/release/cfspeed "$NAME"
-            else
-              cargo build --release --target $ARCH-unknown-$OS
-              cp target/$ARCH-unknown-$OS/release/cfspeed "$NAME"
-            fi
-            
-            upx --best --brute "$NAME" || true
-            tar -czf "build/cfspeed_${OS}_${ARCH}.tar.gz" "$NAME"
-            cp "$NAME" "binaries/cfspeed_${OS}_${ARCH}${SUFFIX}"
-            rm "$NAME"
-          }
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-amd64-build
+          path: |
+            build/*.tar.gz
+            binaries/*
 
-          # Linux 64-bit and ARM
-          build_and_compress linux x86_64
-          build_and_compress linux aarch64
+  build_linux_arm64:
+    name: 构建 Linux ARM64
+    runs-on: ubuntu-latest
+    needs: delete_releases
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
 
-          # Windows 64-bit
-          build_and_compress windows x86_64 .exe
+      - name: 设置 Rust 环境
+        uses: actions-rust-lang/setup-rust-toolchain@v1.11.0
+        with:
+          rust-version: '1.82.0'
 
-          # macOS 64-bit
-          build_and_compress darwin x86_64
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx musl-tools
 
-      - name: 生成 SHA256 校验和  
-        run: |  
-          cd build  
-          sha256sum * > sha256sum.txt  
+      - name: 安装 musl 目标
+        run: |
+          rustup target add aarch64-unknown-linux-musl
+
+      - name: 构建 Linux ARM64
+        run: |
+          mkdir -p build
+          mkdir -p binaries
+          
+          # 构建 Linux ARM64
+          cargo build --release --target aarch64-unknown-linux-musl
+          cp target/aarch64-unknown-linux-musl/release/cfspeed cfspeed
+          
+          upx --best --brute cfspeed || true
+          tar -czf "build/cfspeed_linux_aarch64.tar.gz" cfspeed
+          cp cfspeed "binaries/cfspeed_linux_aarch64"
+          rm cfspeed
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64-build
+          path: |
+            build/*.tar.gz
+            binaries/*
+
+  build_windows:
+    name: 构建 Windows
+    runs-on: windows-latest
+    needs: delete_releases
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Rust 环境
+        uses: actions-rust-lang/setup-rust-toolchain@v1.11.0
+        with:
+          rust-version: '1.82.0'
+
+      - name: 安装 UPX
+        run: |
+          choco install upx -y
+
+      - name: 构建 Windows
+        run: |
+          mkdir -p build
+          mkdir -p binaries
+          
+          # 构建 Windows x86_64
+          cargo build --release
+          copy target\release\cfspeed.exe cfspeed.exe
+          
+          upx --best --brute cfspeed.exe || true
+          tar -czf build/cfspeed_windows_x86_64.tar.gz cfspeed.exe
+          copy cfspeed.exe binaries\cfspeed_windows_x86_64.exe
+          del cfspeed.exe
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            build/*.tar.gz
+            binaries/*
+
+  build_macos:
+    name: 构建 macOS
+    runs-on: macos-latest
+    needs: delete_releases
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Rust 环境
+        uses: actions-rust-lang/setup-rust-toolchain@v1.11.0
+        with:
+          rust-version: '1.82.0'
+
+      - name: 安装 UPX
+        run: |
+          brew install upx
+
+      - name: 构建 macOS
+        run: |
+          mkdir -p build
+          mkdir -p binaries
+          
+          # 构建 macOS x86_64
+          cargo build --release
+          cp target/release/cfspeed cfspeed
+          
+          upx --best --brute cfspeed || true
+          tar -czf "build/cfspeed_darwin_x86_64.tar.gz" cfspeed
+          cp cfspeed "binaries/cfspeed_darwin_x86_64"
+          rm cfspeed
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: |
+            build/*.tar.gz
+            binaries/*
+
+  create_release:
+    name: 创建发布版本
+    runs-on: ubuntu-latest
+    needs: [build_linux_amd64, build_linux_arm64, build_windows, build_macos]
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载所有构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 准备发布文件
+        run: |
+          mkdir -p build
+          mkdir -p binaries
+          
+          # 复制所有构建产物
+          cp -r artifacts/linux-amd64-build/build/* build/ || true
+          cp -r artifacts/linux-amd64-build/binaries/* binaries/ || true
+          
+          cp -r artifacts/linux-arm64-build/build/* build/ || true
+          cp -r artifacts/linux-arm64-build/binaries/* binaries/ || true
+          
+          cp -r artifacts/windows-build/build/* build/ || true
+          cp -r artifacts/windows-build/binaries/* binaries/ || true
+          
+          cp -r artifacts/macos-build/build/* build/ || true
+          cp -r artifacts/macos-build/binaries/* binaries/ || true
+          
+          # 生成校验和
+          cd build
+          sha256sum * > sha256sum.txt
+          cd ..
 
       - name: 提交并推送更改
         if: success()
@@ -109,22 +256,22 @@ jobs:
             fi
           fi
 
-      - name: 上传构建产物  
+      - name: 上传构建产物
         uses: actions/upload-artifact@v4
-        with:  
-          name: cfspeed-构建产物  
-          path: build/*  
+        with:
+          name: cfspeed-构建产物
+          path: build/*
 
-      - name: 创建发布版本  
+      - name: 创建发布版本
         uses: softprops/action-gh-release@v2
-        if: github.event_name == 'workflow_dispatch'  
-        with:  
-          tag_name: v${{ github.run_number }}  
-          name: Cloudflare CIDR 测速工具 v${{ github.run_number }}  
-          draft: false  
-          prerelease: false  
-          files: |  
-            build/*.tar.gz  
-            build/sha256sum.txt  
-        env:  
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Cloudflare CIDR 测速工具 v${{ github.run_number }}
+          draft: false
+          prerelease: false
+          files: |
+            build/*.tar.gz
+            build/sha256sum.txt
+        env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
