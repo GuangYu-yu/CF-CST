@@ -1,0 +1,28 @@
+[package]
+name = "cfspeed"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "*", features = ["full"] }
+reqwest = { version = "*", features = ["json", "rustls-tls"] }
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+anyhow = "*"
+thiserror = "*"
+once_cell = "*"
+ipnetwork = "*"
+humantime = "*"
+ipnet = "*"
+clap = { version = "*", features = ["derive"] }
+csv = "*"
+rand = "*"
+futures = "*"
+chrono = "*"
+num_cpus = "*"
+async-trait = "*"
+governor = "*"
+dashmap = "*"
+indicatif = "*"
+lazy_static = "*"
+prettytable-rs = "*"
