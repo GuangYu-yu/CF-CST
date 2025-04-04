@@ -34,7 +34,7 @@ jobs:
                   await github.rest.git.deleteRef({
                     owner,
                     repo,
-                    ref: `tags/${release.tag_name}`
+                    ref: `tags/${release.tag_name}` 
                   });
                 } catch (e) {
                   console.log(`Failed to delete tag ${release.tag_name}: ${e}`);
@@ -50,7 +50,7 @@ jobs:
       - name: 安装依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y upx musl-tools
+          sudo apt-get install -y upx musl-tools gcc-aarch64-linux-gnu
 
       - name: 安装 musl 目标
         run: |
