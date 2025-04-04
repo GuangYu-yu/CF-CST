@@ -64,8 +64,8 @@ jobs:
             echo "构建 $OS $ARCH..."
             if [ "$OS" = "linux" ]; then
               # 对 Linux 平台使用静态链接
-              cargo build --release --target $ARCH-unknown-linux-gnu
-              cp target/$ARCH-unknown-linux-gnu/release/cfspeed "$NAME"
+              cargo build --release --target $ARCH-unknown-linux-musl
+              cp target/$ARCH-unknown-linux-musl/release/cfspeed "$NAME"
             else
               cargo build --release --target $ARCH-unknown-$OS
               cp target/$ARCH-unknown-$OS/release/cfspeed "$NAME"
@@ -77,19 +77,15 @@ jobs:
             rm "$NAME"
           }
 
-          # Linux
+          # Linux 64-bit and ARM
           build_and_compress linux x86_64
-          build_and_compress linux i686
           build_and_compress linux aarch64
-          build_and_compress linux armv7
 
-          # Windows
+          # Windows 64-bit
           build_and_compress windows x86_64 .exe
-          build_and_compress windows i686 .exe
 
-          # macOS
+          # macOS 64-bit
           build_and_compress darwin x86_64
-          build_and_compress darwin aarch64
 
       - name: 生成 SHA256 校验和  
         run: |  
