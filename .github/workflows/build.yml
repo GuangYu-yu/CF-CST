@@ -47,13 +47,18 @@ jobs:
         with:  
           rust-version: '1.82.0'
 
+      - name: 安装 musl 目标
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          rustup target add aarch64-unknown-linux-musl
+
       - name: 构建所有平台  
         run: |  
           mkdir -p build
           mkdir -p binaries
 
           sudo apt-get update
-          sudo apt-get install -y upx
+          sudo apt-get install -y upx musl-tools
 
           build_and_compress() {
             local OS=$1
