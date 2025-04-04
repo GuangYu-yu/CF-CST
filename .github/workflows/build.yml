@@ -50,13 +50,7 @@ jobs:
       - name: 安装依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y libssl-dev upx musl-tools
-
-      - name: 设置 OpenSSL 环境变量
-        run: |
-          echo "OPENSSL_DIR=/usr" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
+          sudo apt-get install -y upx musl-tools
 
       - name: 安装 musl 目标
         run: |
