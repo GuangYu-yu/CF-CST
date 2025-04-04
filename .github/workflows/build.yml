@@ -47,6 +47,14 @@ jobs:
         with:  
           rust-version: '1.82.0'
 
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev upx musl-tools
+
+      - name: 设置 OpenSSL 环境变量
+        run: echo "OPENSSL_DIR=/usr/lib/ssl" >> $GITHUB_ENV
+
       - name: 安装 musl 目标
         run: |
           rustup target add x86_64-unknown-linux-musl
@@ -56,9 +64,6 @@ jobs:
         run: |  
           mkdir -p build
           mkdir -p binaries
-
-          sudo apt-get update
-          sudo apt-get install -y upx musl-tools
 
           build_and_compress() {
             local OS=$1
