@@ -95,22 +95,17 @@ jobs:
         with:
           rust-version: '1.82.0'
 
-      - name: 安装依赖
+      - name: 安装 cross
         run: |
-          sudo apt-get update
-          sudo apt-get install -y upx musl-tools
-
-      - name: 安装 musl 目标
-        run: |
-          rustup target add aarch64-unknown-linux-musl
+          cargo install cross
 
       - name: 构建 Linux ARM64
         run: |
           mkdir -p build
           mkdir -p binaries
           
-          # 构建 Linux ARM64
-          cargo build --release --target aarch64-unknown-linux-musl
+          # 使用 cross 构建 Linux ARM64
+          cross build --release --target aarch64-unknown-linux-musl
           cp target/aarch64-unknown-linux-musl/release/cfspeed cfspeed
           
           upx --best --brute cfspeed || true
@@ -138,6 +133,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1.11.0
         with:
           rust-version: '1.82.0'
+          target: x86_64-pc-windows-msvc
 
       - name: 安装 UPX
         run: |
@@ -148,9 +144,9 @@ jobs:
           mkdir -p build
           mkdir -p binaries
           
-          # 构建 Windows x86_64
-          cargo build --release
-          copy target\release\cfspeed.exe cfspeed.exe
+          # 使用 MSVC 工具链构建 Windows x86_64
+          cargo build --release --target x86_64-pc-windows-msvc
+          copy target\x86_64-pc-windows-msvc\release\cfspeed.exe cfspeed.exe
           
           upx --best --brute cfspeed.exe || true
           tar -czf build/cfspeed_windows_x86_64.tar.gz cfspeed.exe
