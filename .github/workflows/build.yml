@@ -69,12 +69,12 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          git pull origin main --no-rebase || git pull origin master --no-rebase
+          git pull origin rust --no-rebase || git pull origin rust --no-rebase
           git add binaries/
           current_time=$(date '+%Y/%m/%d %H:%M:%S')
           if ! git diff --staged --quiet; then
             git commit -m "更新 Windows 二进制文件 ${current_time}"
-            git push
+            git push origin rust
           fi
 
       - name: 构建 Linux AMD64
@@ -95,12 +95,12 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          git pull origin main --no-rebase || git pull origin master --no-rebase
+          git pull origin rust --no-rebase || git pull origin rust --no-rebase
           git add binaries/
           current_time=$(date '+%Y/%m/%d %H:%M:%S')
           if ! git diff --staged --quiet; then
             git commit -m "更新 Linux AMD64 二进制文件 ${current_time}"
-            git push
+            git push origin rust
           fi
 
       - name: 构建 Linux ARM64
@@ -121,12 +121,12 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          git pull origin main --no-rebase || git pull origin master --no-rebase
+          git pull origin rust --no-rebase || git pull origin rust --no-rebase
           git add binaries/
           current_time=$(date '+%Y/%m/%d %H:%M:%S')
           if ! git diff --staged --quiet; then
             git commit -m "更新 Linux ARM64 二进制文件 ${current_time}"
-            git push
+            git push origin rust
           fi
 
   build_macos:
@@ -159,12 +159,12 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          git pull origin main --no-rebase || git pull origin master --no-rebase
+          git pull origin rust --no-rebase || git pull origin rust --no-rebase
           git add binaries/
           current_time=$(date '+%Y/%m/%d %H:%M:%S')
           if ! git diff --staged --quiet; then
             git commit -m "更新 macOS 二进制文件 ${current_time}"
-            git push
+            git push origin rust
           fi
 
   post_build:
