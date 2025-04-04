@@ -78,6 +78,11 @@ jobs:
           cargo build --release
           cp target/release/cfspeed build/macos/cfspeed
 
+  post_build:
+    name: 后处理
+    runs-on: ubuntu-latest
+    needs: [build_linux_windows, build_macos]
+    steps:
       - name: 压缩可执行文件
         run: |
           upx --best --brute build/windows/cfspeed.exe
