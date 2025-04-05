@@ -93,7 +93,7 @@ impl DynamicThreadPool {
 
             // 根据卡顿比例调整因子
             let min_factor = 0.7;
-            let max_factor = 4.0;
+            let max_factor = 1.3;
             let adjustment_factor = min_factor + (max_factor - min_factor) * (1.0 - stall_ratio);
 
             let new_threads_per_core = ((current_threads as f64 * adjustment_factor) as usize)
