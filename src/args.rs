@@ -13,6 +13,7 @@ use std::time::Duration;
 pub struct Args {
     pub url: String,
     pub file: String,
+    pub cidr: String,
     pub test_count: u32,
     pub port: u16,
     pub ip_per_cidr: usize,
@@ -38,6 +39,7 @@ impl Args {
         Self {
             url: String::new(),
             file: String::new(),
+            cidr: String::new(),
             test_count: 4,
             port: 443,
             ip_per_cidr: 2,
@@ -106,6 +108,7 @@ impl Args {
                 match name.as_str() {
                     "url" => parsed.url = args[i + 1].clone(),
                     "f" => parsed.file = args[i + 1].clone(),
+                    "cidr" => parsed.cidr = args[i + 1].clone(),
                     "t" => parsed.test_count = args[i + 1].parse().unwrap_or(4),
                     "tp" => parsed.port = args[i + 1].parse().unwrap_or(443),
                     "ts" => parsed.ip_per_cidr = args[i + 1].parse().unwrap_or(2),
@@ -135,9 +138,9 @@ impl Args {
     }
     
     pub fn validate(&self) -> Result<(), String> {
-        // 检查必要参数
-        if self.url.is_empty() && self.file.is_empty() {
-            return Err("错误: 必须指定 -url 或 -f 参数".to_string());
+        // 检查必要参数，至少需要指定 -url、-f 或 -cidr 中的一个
+        if self.url.is_empty() && self.file.is_empty() && self.cidr.is_empty() {
+            return Err("错误: 必须至少指定 -url、-f 或 -cidr 这其中的一个参数".to_string());
         }
     
         // 如果使用 -notest 参数，检查是否指定了 -useip4 或 -useip6
@@ -175,6 +178,7 @@ pub fn print_help() {
     println!("\n{}:", "基本参数".bold());
     print_table_row!("-url", "string", "测速的CIDR链接");
     print_table_row!("-f", "string", "指定测速的文件路径 (当未设置-url时使用)");
+    print_table_row!("-cidr", "string", "手动指定CIDR，多个用逗号分隔 (例: 104.16.0.0/13,2606:4700::/32)");
     print_table_row!("-o", "string", "结果文件名 (默认: IP_Speed.csv)");
     print_table_row!("-h", "", "显示帮助信息");
     print_table_row!("-showall", "", "使用后显示所有结果，包括未查询到数据中心的结果");

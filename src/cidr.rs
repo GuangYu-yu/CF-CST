@@ -80,6 +80,28 @@ pub fn get_cidr_from_file(filename: &str) -> Result<Vec<String>, String> {
     parse_cidr_list_from_reader(BufReader::new(file))
 }
 
+// 从命令行参数解析CIDR列表
+pub fn parse_command_line_cidrs(cidr_str: &str) -> Result<Vec<String>, String> {
+    if cidr_str.is_empty() {
+        return Ok(Vec::new());
+    }
+    
+    let mut cidr_list = Vec::new();
+    for cidr in cidr_str.split(',') {
+        let cidr = cidr.trim();
+        if !cidr.is_empty() {
+            let formatted_cidr = format_cidr(cidr);
+            cidr_list.push(formatted_cidr);
+        }
+    }
+    
+    if cidr_list.is_empty() {
+        return Err("命令行参数中未找到有效的CIDR".to_string());
+    }
+    
+    Ok(cidr_list)
+}
+
 fn format_cidr(line: &str) -> String {
     match line.parse::<IpNetwork>() {
         Ok(ip_network) => ip_network.to_string(),

@@ -12,7 +12,7 @@ mod types;
 mod pool;
 
 use crate::args::{Args, print_help};
-use crate::cidr::{expand_cidrs, get_cidr_from_file, get_cidr_from_url};
+use crate::cidr::{expand_cidrs, get_cidr_from_file, get_cidr_from_url, parse_command_line_cidrs};
 use crate::getcolo::get_location_map;
 use crate::output::{generate_ip_file, print_results_summary, write_results_to_csv};
 use crate::tcping::test_ips;
@@ -66,32 +66,56 @@ async fn run_main_program(args: Args) {
     // 验证参数
     if let Err(err) = args.validate() {
         println!("{}", err);
-        if args.url.is_empty() && args.file.is_empty() {
+        if args.url.is_empty() && args.file.is_empty() && args.cidr.is_empty() {
             print_help();
         }
         return;
     }
 
     // 获取CIDR列表
-    let cidr_list = if !args.url.is_empty() {
+    let mut cidr_list = Vec::new();
+    
+    // 从URL获取CIDR
+    if !args.url.is_empty() {
         println!("从URL获取CIDR列表: {}", args.url);
         match get_cidr_from_url(&args.url).await {
-            Ok(list) => list,
+            Ok(list) => cidr_list.extend(list),
             Err(e) => {
-                println!("获取CIDR列表失败: {}", e);
-                return;
+                println!("从URL获取CIDR列表失败: {}", e);
+                // 不立即返回，继续尝试其他来源
             }
         }
-    } else {
+    }
+    
+    // 从文件获取CIDR
+    if !args.file.is_empty() {
         println!("从文件获取CIDR列表: {}", args.file);
         match get_cidr_from_file(&args.file) {
-            Ok(list) => list,
+            Ok(list) => cidr_list.extend(list),
             Err(e) => {
-                println!("获取CIDR列表失败: {}", e);
-                return;
+                println!("从文件获取CIDR列表失败: {}", e);
+                // 不立即返回，继续尝试其他来源
             }
         }
-    };
+    }
+    
+    // 从命令行参数获取CIDR
+    if !args.cidr.is_empty() {
+        println!("从命令行参数获取CIDR列表");
+        match parse_command_line_cidrs(&args.cidr) {
+            Ok(list) => cidr_list.extend(list),
+            Err(e) => {
+                println!("解析命令行CIDR列表失败: {}", e);
+                // 不立即返回，继续尝试其他来源
+            }
+        }
+    }
+    
+    // 检查是否成功获取到CIDR
+    if cidr_list.is_empty() {
+        println!("错误: 未能从任何来源获取到有效的CIDR列表");
+        return;
+    }
 
     println!("共获取到 {} 个CIDR", cidr_list.len());
 
