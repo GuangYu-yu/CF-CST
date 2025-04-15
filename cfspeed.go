@@ -89,6 +89,7 @@ var (
 var (
 	// 命令行参数
 	urlFlag     *string
+	cidrFlag    *string
 	fileFlag    *string
 	testCount   *int
 	portFlag    *int
@@ -123,6 +124,7 @@ func init() {
 
 	// 初始化命令行参数
 	urlFlag = flag.String("url", "", "测速的CIDR链接")
+	cidrFlag = flag.String("cidr", "", "手动指定CIDR，多个用逗号分隔 (例: 104.16.0.0/13,2606:4700::/32)")
 	fileFlag = flag.String("f", "", "指定测速的文件")
 	testCount = flag.Int("t", 4, "延迟测速的次数")
 	portFlag = flag.Int("tp", 443, "指定测速的端口号")
@@ -270,8 +272,8 @@ func runMainProgram() {
 	}
 
 	// 检查必要参数
-	if *urlFlag == "" && *fileFlag == "" {
-		fmt.Println("错误: 必须指定 -url 或 -f 参数")
+	if *urlFlag == "" && *fileFlag == "" && *cidrFlag == "" {
+		fmt.Println("错误: 必须至少指定 -url、-f 或 -cidr 其中的一个参数")
 		printHelp()
 		return
 	}
@@ -286,7 +288,11 @@ func runMainProgram() {
 	var cidrList []string
 	var err error
 
-	if *urlFlag != "" {
+	if *cidrFlag != "" {
+		// 处理手动指定的CIDR
+		cidrList = strings.Split(*cidrFlag, ",")
+		fmt.Printf("从命令行参数获取 %d 个CIDR\n", len(cidrList))
+	} else if *urlFlag != "" {
 		fmt.Printf("从URL获取CIDR列表: %s\n", *urlFlag)
 		cidrList, err = getCIDRFromURL(*urlFlag)
 	} else {
@@ -309,8 +315,8 @@ func runMainProgram() {
 	if *noTest {
 		var results []TestResult
 		for _, cidr := range expandedCIDRs {
-			_, _, err := net.ParseCIDR(cidr)
-			if err != nil {
+			_, _, parseErr := net.ParseCIDR(cidr)
+			if parseErr != nil {
 				continue
 			}
 			results = append(results, TestResult{
@@ -377,8 +383,8 @@ func runMainProgram() {
 
 	// 限制输出数量
 	if *printCount != "all" {
-		count, err := strconv.Atoi(*printCount)
-		if err == nil && count > 0 {
+		count, parseErr := strconv.Atoi(*printCount)
+		if parseErr == nil && count > 0 {
 			// 只有当结果数量大于指定数量时才截取
 			if count < len(filteredResults) {
 				filteredResults = filteredResults[:count]
