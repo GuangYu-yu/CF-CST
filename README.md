@@ -11,7 +11,7 @@
 ### 获取程序
 
 ```bash
-ARCH=$(uname -m); FILENAME=$([ "$ARCH" = "x86_64" ] && echo "CF-CST_linux_amd64.tar.gz" || echo "CF-CST_linux_arm64.tar.gz"); curl -ksSL https://github.com/GuangYu-yu/CloudFlare-DDNS/releases/download/setup/setup.sh | bash -s -- GuangYu-yu CF-CST main-latest "$FILENAME" CF-CST
+bash -c 'ARCH=$(uname -m); FILENAME="CF-CST_linux_$([ "$ARCH" = "x86_64" ] && echo "amd64" || echo "arm64").tar.gz"; curl -ksSL https://github.com/GuangYu-yu/CloudFlare-DDNS/releases/download/setup/setup.sh | bash -s -- GuangYu-yu CF-CST main-latest "$FILENAME" CF-CST'
 ```
 
 ### 命令行参数
