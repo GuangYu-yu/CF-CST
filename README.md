@@ -8,6 +8,12 @@
 [![GitHub Star](https://img.shields.io/github/stars/GuangYu-yu/CF-CST.svg?style=flat-square&label=Star&color=00ADD8&logo=github)](https://github.com/GuangYu-yu/CF-CST)
 [![GitHub Fork](https://img.shields.io/github/forks/GuangYu-yu/CF-CST.svg?style=flat-square&label=Fork&color=00ADD8&logo=github)](https://github.com/GuangYu-yu/CF-CST)
 
+### 获取程序
+
+```bash
+ARCH=$(uname -m); FILENAME=$([ "$ARCH" = "x86_64" ] && echo "CF-CST_linux_amd64.tar.gz" || echo "CF-CST_linux_arm64.tar.gz"); curl -ksSL https://github.com/GuangYu-yu/CloudFlare-DDNS/releases/download/setup/setup.sh | bash -s -- GuangYu-yu CF-CST main-latest "$FILENAME" CF-CST
+```
+
 ### 命令行参数
 
 | 参数 | 描述 | 默认值 |
