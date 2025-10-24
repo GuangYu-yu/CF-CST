@@ -5,62 +5,29 @@
 ## 使用方法
 
 ```
-基本参数:
-  -url string      测速的CIDR链接
-  -f string        指定测速的文件路径 (当未设置-url时使用)
-  -o string        结果文件名 (默认: IP_Speed.csv)
-  -h               显示帮助信息
-  -notest          不进行测速，只生成随机IP (需配合 -useip4 或 -useip6 使用)
-  -showall         使用后显示所有结果，包括未查询到数据中心的结果
-  -timeout string  程序执行超时退出 (默认: 5h0m0s)，设置为 0 则不限制时间
-
-测速参数:
-  -t int           延迟测试次数 (默认: 4)
-  -tp int          测试端口号 (默认: 443)
-  -ts int          每个CIDR测试的IP数量 (默认: 2)
-  -n int           并发测试线程数量 (默认: 128)
-
-  注意避免 -t 和 -ts 导致测速量过于庞大！
-
-筛选参数:
-  -colo string     指定数据中心，多个用逗号分隔 (例: HKG,NRT,LAX,SJC)
-  -tl int          延迟上限 (默认: 500ms)
-  -tll int         延迟下限 (默认: 0ms)
-  -tlr float       丢包率上限 (默认: 0.5)
-  -p string        输出结果数量 (默认: all)
-
-输出选项:
-  -nocsv           不生成CSV文件 (默认: 不使用)
-  -useip4 string   生成IPv4列表 (默认: 不使用)
-                   - 使用 all: 输出所有IPv4 CIDR的完整IP列表
-                   - 使用数字 (如9999): 输出指定数量的不重复IPv4
-  -useip6 string   生成IPv6列表 (默认: 不使用)
-                   - 使用数字 (如9999): 输出指定数量的不重复IPv6
-  -iptxt string    指定IP列表输出文件名 (默认: ip.txt)
-                   - 使用此参数时必须至少使用 -useip4 或 -useip6
+# CF-CST
+  -f            指定 CloudflareST-Rust 可执行文件名                             CloudflareST-Rust.exe
+  -cidr         指定要解析的地址                                                无
+  -cf           从指定文件获取列表                                              无
+  -cu           从URL远程获取列表                                               无
+  -ic           从每个CIDR中分别随机选择用于测速的 IP 数量                      2
+  -s4           为 IPv4 CIDR 附加数量后缀                                       无
+  -s6           为 IPv6 CIDR 附加数量后缀                                       无
+  -ca           可传递给测速程序的参数: t tp colo tl tll tlr n timeout intf hu  无
+  -o            指定输出 csv 文件名                                             CIDR-Result.csv
+  -ot           指定输出 txt 文件名                                             ip.txt    
+  -lc           指定写入文件的条目数量                                          无限制       
+  -sc           跳过删除临时文件 (cidr_split_*.txt, result_*.csv)               false    
 ```
 
 ### 基本用法
 
 ```
-# 从 URL 获取 CIDR 列表并测速
-./cfspeed -url https://example.com/cidr.txt
-
-# 从本地文件获取 CIDR 列表
-./cfspeed -f cidr.txt
+略
 ```
 
 ### 示例
 
 ```bash
-# 测试指定地区的节点，限制延迟在 500ms 以内
-./cfspeed -url https://example.com/cidr.txt -colo HKG,NRT,LAX,SJC,IAD,CDG,SEA -tl 500
-
-# 生成 IPv4 列表而不进行测速
-./cfspeed -url https://example.com/cidr.txt -notest -useip4 all
+略
 ```
-
-## 数据文件说明
-
-- `IP_Speed.csv`: 测速结果文件
-- `ip.txt`: 生成的 IP 列表文件
