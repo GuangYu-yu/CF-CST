@@ -1,17 +1,20 @@
 #!/bin/bash
 
+# 项目名称
+PROJECT_NAME="CF-CST"
+
 # 获取当前系统架构
 ARCH=$(uname -m)
 
 # 根据系统架构选择相应的文件名
 case "$ARCH" in
     x86_64) 
-        FILENAME="CF-CST_linux_amd64.tar.gz"
-        DOWNLOAD_URL="https://github.com/GuangYu-yu/CloudflareST-Rust/releases/download/latest/CF-CST_linux_amd64.tar.gz"
+        FILENAME="${PROJECT_NAME}_linux_amd64.tar.gz"
+        DOWNLOAD_URL="https://github.com/GuangYu-yu/CloudflareST-Rust/releases/download/latest/${PROJECT_NAME}_linux_amd64.tar.gz"
         ;;
     aarch64) 
-        FILENAME="CF-CST_linux_arm64.tar.gz"
-        DOWNLOAD_URL="https://github.com/GuangYu-yu/CloudflareST-Rust/releases/download/latest/CF-CST_linux_arm64.tar.gz"
+        FILENAME="${PROJECT_NAME}_linux_arm64.tar.gz"
+        DOWNLOAD_URL="https://github.com/GuangYu-yu/CloudflareST-Rust/releases/download/latest/${PROJECT_NAME}_linux_arm64.tar.gz"
         ;;
     *)
         echo "不支持的架构: $ARCH"
@@ -63,6 +66,6 @@ else
 fi
 
 # 赋予执行权限
-chmod +x CF-CST
+chmod +x $PROJECT_NAME
 
-echo "CloudflareST-Rust 获取完成！"
+echo "$PROJECT_NAME 获取完成！"
