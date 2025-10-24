@@ -1,155 +1,232 @@
-name: 构建 cfspeed
-on:  
-  workflow_dispatch:   # 允许手动触发
+name: 构建和发布
 
-jobs:  
-  build:  
-    name: 构建  
-    runs-on: ubuntu-latest  
+on:
+  workflow_dispatch:
+    inputs:
+      upload_to_repo:
+        description: '上传二进制文件到项目仓库'
+        type: boolean
+        default: false
+      create_release:
+        description: '创建发布版本'
+        type: boolean
+        default: true
+      project_name:
+        description: '项目名称'
+        type: string
+        default: 'CF-CST'
+        required: true
 
-    steps:  
-      - name: 检出代码  
-        uses: actions/checkout@v4  
+jobs:
+  build:
+    name: 构建 ${{ matrix.os }}_${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    if: ${{ always() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: Windows
+            runner: windows-latest
+            arch: AMD64
+            target: x86_64-pc-windows-msvc
+            binary_name: ${{ github.event.inputs.project_name }}.exe
+          - os: Windows
+            runner: windows-latest
+            arch: ARM64
+            target: aarch64-pc-windows-msvc
+            binary_name: ${{ github.event.inputs.project_name }}.exe
+          - os: Linux
+            runner: ubuntu-latest
+            arch: AMD64
+            target: x86_64-unknown-linux-musl
+            binary_name: ${{ github.event.inputs.project_name }}
+          - os: Linux
+            runner: ubuntu-latest
+            arch: ARM64
+            target: aarch64-unknown-linux-musl
+            binary_name: ${{ github.event.inputs.project_name }}
+          - os: MacOS
+            runner: macos-latest
+            arch: AMD64
+            target: x86_64-apple-darwin
+            binary_name: ${{ github.event.inputs.project_name }}
+          - os: MacOS
+            runner: macos-latest
+            arch: ARM64
+            target: aarch64-apple-darwin
+            binary_name: ${{ github.event.inputs.project_name }}
 
-      - name: 删除旧版本
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装最新 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 安装 Zig
+        uses: mlugg/setup-zig@v2.0.5
+        with:
+          version: master
+
+      - name: 安装 MUSL 工具链（仅 Linux）
+        if: startsWith(matrix.os, 'Linux')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add ${{ matrix.target }}
+        shell: bash
+
+      - name: 尝试 cargo-zigbuild 构建
+        run: |
+          cargo install --locked cargo-zigbuild
+          cargo update
+          echo "尝试使用 cargo-zigbuild 构建..."
+          if ! cargo zigbuild --release --target ${{ matrix.target }}; then
+            echo "cargo-zigbuild 构建失败，使用 cargo build 进行回退..."
+            cargo build --release --target ${{ matrix.target }} || exit 1
+          fi
+        shell: bash
+
+      - name: 创建二进制目录
+        run: mkdir -p binaries/${{ matrix.os }}_${{ matrix.arch }}
+        shell: bash
+
+      - name: 复制二进制文件
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} binaries/${{ matrix.os }}_${{ matrix.arch }}/
+        shell: bash
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.project_name }}-${{ matrix.os }}_${{ matrix.arch }}
+          path: binaries/${{ matrix.os }}_${{ matrix.arch }}/
+
+  strip_binaries:
+    name: Strip 二进制文件
+    needs: [build]
+    runs-on: windows-latest
+    steps:
+      - name: 下载所有构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: stripped_artifacts/
+
+      - name: 使用 llvm-strip
+        run: |
+          Get-ChildItem -Recurse -File stripped_artifacts -Include *.exe, ${{ github.event.inputs.project_name }} | ForEach-Object {
+            Write-Host "Stripping $($_.FullName)"
+            & "llvm-strip" $_.FullName
+          }
+        shell: pwsh
+
+      - name: 上传精简后的产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: stripped_artifacts
+          path: stripped_artifacts/
+
+  upload_to_repo:
+    name: 上传二进制文件到仓库
+    needs: [strip_binaries]
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.upload_to_repo == 'true' }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 下载所有构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: stripped_artifacts
+          path: downloaded_artifacts/
+
+      - name: 准备二进制文件
+        run: |
+          rm -rf binaries
+          mkdir -p binaries
+          for dir in downloaded_artifacts/${{ github.event.inputs.project_name }}-*/; do
+            platform_name=$(basename "$dir" | sed 's/${{ github.event.inputs.project_name }}-//')
+            mkdir -p "binaries/$platform_name"
+            cp -r "$dir"/* "binaries/$platform_name/"
+          done
+          echo "最终目录结构:"
+          find binaries -type f | sort
+
+      - name: 上传二进制文件到仓库
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "自动构建: 添加所有平台二进制文件"
+          file_pattern: 'binaries/*'
+
+  create_release:
+    name: 创建发布版本
+    needs: [strip_binaries]
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.create_release == 'true' }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 删除当前分支的旧版本
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
-            const releases = await github.rest.repos.listReleases({
-              owner,
-              repo
-            });
+            const currentBranch = context.ref.replace('refs/heads/', '');
+            const targetTag = `${currentBranch}-latest`;
             
+            // 获取所有发布版本
+            const releases = await github.rest.repos.listReleases({ owner, repo });
+            
+            // 只删除当前分支对应的发布版本
             for (const release of releases.data) {
-              await github.rest.repos.deleteRelease({
-                owner,
-                repo,
-                release_id: release.id
-              });
-              
-              if (release.tag_name) {
+              if (release.tag_name === targetTag) {
+                await github.rest.repos.deleteRelease({ owner, repo, release_id: release.id });
                 try {
-                  await github.rest.git.deleteRef({
-                    owner,
-                    repo,
-                    ref: `tags/${release.tag_name}`
-                  });
+                  await github.rest.git.deleteRef({ owner, repo, ref: `tags/${release.tag_name}` });
                 } catch (e) {
                   console.log(`Failed to delete tag ${release.tag_name}: ${e}`);
                 }
               }
             }
 
-      - name: 设置 Go 环境  
-        uses: actions/setup-go@v5
-        with:  
-          go-version: '1.24.1'  
+      - name: 下载所有构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: stripped_artifacts
+          path: artifacts/
 
-      - name: 初始化 Go 模块
+      - name: 准备发布文件
         run: |
-          go mod init cfspeed
-          
-          go get github.com/olekukonko/tablewriter
-          go get github.com/cheggaaa/pb/v3
-          go get golang.org/x/sync/semaphore
-         
-          go mod tidy
-          
-      - name: 构建所有平台  
-        run: |  
-          mkdir -p build
-          mkdir -p binaries
-
-          sudo apt-get update
-          sudo apt-get install -y upx
-
-          build_and_compress() {
-            local OS=$1
-            local ARCH=$2
-            local SUFFIX=$3
-            local EXTRA_FLAGS=$4
-            local NAME="cfspeed${SUFFIX}"
-            
-            echo "构建 $OS $ARCH..."
-            if [ "$OS" = "linux" ]; then
-              # 对 Linux 平台使用静态链接
-              env GOOS=$OS GOARCH=$ARCH $EXTRA_FLAGS CGO_ENABLED=0 go build -ldflags="-s -w" -o "$NAME" cfspeed.go
+          mkdir -p release
+          for dir in artifacts/${{ github.event.inputs.project_name }}-*/; do
+            platform_name=$(basename "$dir" | sed 's/${{ github.event.inputs.project_name }}-//')
+            os_name=$(echo "$platform_name" | cut -d'_' -f1 | tr '[:upper:]' '[:lower:]')
+            arch_name=$(echo "$platform_name" | cut -d'_' -f2 | tr '[:upper:]' '[:lower:]')
+            mkdir -p "temp_$platform_name"
+            cp "$dir"/* "temp_$platform_name/"
+            cd "temp_$platform_name"
+            if [[ "$os_name" == "windows" ]]; then
+              zip -r "../release/${{ github.event.inputs.project_name }}_${os_name}_${arch_name}.zip" .
             else
-              env GOOS=$OS GOARCH=$ARCH $EXTRA_FLAGS go build -ldflags="-s -w" -o "$NAME" cfspeed.go
+              tar -czf "../release/${{ github.event.inputs.project_name }}_${os_name}_${arch_name}.tar.gz" .
             fi
-            
-            upx --best --brute "$NAME" || true
-            tar -czf "build/cfspeed_${OS}_${ARCH}.tar.gz" "$NAME"
-            cp "$NAME" "binaries/cfspeed_${OS}_${ARCH}${SUFFIX}"
-            rm "$NAME"
-          }
+            cd ..
+            rm -rf "temp_$platform_name"
+          done
 
-          # Linux
-          build_and_compress linux amd64
-          build_and_compress linux 386
-          build_and_compress linux arm64
-          build_and_compress linux arm
-          
-          # MIPS
-          env GOOS=linux GOARCH=mips GOMIPS=softfloat CGO_ENABLED=0 go build -ldflags="-s -w" -o cfspeed cfspeed.go
-          upx --best --brute cfspeed || true
-          tar -czf build/cfspeed_linux_mips.tar.gz cfspeed
-          cp cfspeed binaries/cfspeed_linux_mips
-          rm cfspeed
-          
-          env GOOS=linux GOARCH=mipsle GOMIPS=softfloat CGO_ENABLED=0 go build -ldflags="-s -w" -o cfspeed cfspeed.go
-          upx --best --brute cfspeed || true
-          tar -czf build/cfspeed_linux_mipsle.tar.gz cfspeed
-          cp cfspeed binaries/cfspeed_linux_mipsle
-          rm cfspeed
-
-          # Windows
-          build_and_compress windows amd64 .exe
-          build_and_compress windows 386 .exe
-
-          # macOS
-          build_and_compress darwin amd64
-          build_and_compress darwin arm64
-
-      - name: 生成 SHA256 校验和  
-        run: |  
-          cd build  
-          sha256sum * > sha256sum.txt  
-
-      - name: 提交并推送更改
-        if: success()
-        run: |
-          if [ -d "binaries" ]; then
-            git config --local user.email "action@github.com"
-            git config --local user.name "GitHub Action"
-            git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-            git pull origin main --no-rebase || git pull origin master --no-rebase
-            git add binaries/
-            current_time=$(date '+%Y/%m/%d %H:%M:%S')
-            if ! git diff --staged --quiet; then
-              git commit -m "更新二进制文件 ${current_time}"
-              git push
-            fi
-          fi
-
-      - name: 上传构建产物  
-        uses: actions/upload-artifact@v4
-        with:  
-          name: cfspeed-构建产物  
-          path: build/*  
-
-      - name: 创建发布版本  
-        uses: softprops/action-gh-release@v2
-        if: github.event_name == 'workflow_dispatch'  
-        with:  
-          tag_name: v${{ github.run_number }}  
-          name: Cloudflare CIDR 测速工具 v${{ github.run_number }}  
-          draft: false  
-          prerelease: false  
-          files: |  
-            build/*.tar.gz  
-            build/sha256sum.txt  
-        env:  
+      - name: 创建发布版本
+        uses: softprops/action-gh-release@v1
+        with:
+          name: "${{ github.event.inputs.project_name }} 最新版本"
+          tag_name: "${{ github.ref_name }}-latest"
+          files: release/*
+          draft: false
+          prerelease: false
+        env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
