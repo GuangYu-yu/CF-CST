@@ -1,6 +1,6 @@
-# CloudFlare CIDR 测速工具
+# Cloudflare-CIDR-Speedtest
 
-这是一个用于测试和筛选 CloudFlare CIDR 的工具
+这是一个通过调用 CloudflareST-Rust 来测速 CloudFlare CIDR 的工具
 
 ## 使用方法
 
@@ -18,16 +18,4 @@
   -ot           指定输出 txt 文件名                                             ip.txt    
   -lc           指定写入文件的条目数量                                           无限制       
   -sc           跳过删除临时文件 (cidr_split_*.txt, result_*.csv)               false    
-```
-
-### 基本用法
-
-```
-略
-```
-
-### 示例
-
-```bash
-略
 ```
