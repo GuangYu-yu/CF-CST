@@ -10,18 +10,18 @@
 
 ### 获取程序
 
-## 获取 CloudflareST-Rust
+#### 获取 CloudflareST-Rust
 
 ```bash
 bash -c 'ARCH=$(uname -m); FILENAME="CloudflareST-Rust_linux_$([ "$ARCH" = "x86_64" ] && echo "amd64" || echo "arm64").tar.gz"; curl -ksSL https://github.com/GuangYu-yu/CloudFlare-DDNS/releases/download/setup/setup.sh | bash -s -- GuangYu-yu CloudflareST-Rust main-latest "$FILENAME" CloudflareST-Rust'
 ```
 
-## 获取 CF-CST
+#### 获取 CF-CST
 ```bash
 bash -c 'ARCH=$(uname -m); FILENAME="CF-CST_linux_$([ "$ARCH" = "x86_64" ] && echo "amd64" || echo "arm64").tar.gz"; curl -ksSL https://github.com/GuangYu-yu/CloudFlare-DDNS/releases/download/setup/setup.sh | bash -s -- GuangYu-yu CF-CST main-latest "$FILENAME" CF-CST'
 ```
 
-## 一次性获取 CloudflareST-Rust 和 CF-CST
+#### 一次性获取 CloudflareST-Rust 和 CF-CST
 
 ```bash
 bash -c 'download() { local project=$1 exec=$2; ARCH=$(uname -m); FILENAME="${exec}_linux_$([ "$ARCH" = "x86_64" ] && echo "amd64" || echo "arm64").tar.gz"; curl -ksSL https://github.com/GuangYu-yu/CloudFlare-DDNS/releases/download/setup/setup.sh | bash -s -- GuangYu-yu "$project" main-latest "$FILENAME" "$exec"; }; download CloudflareST-Rust CloudflareST-Rust && download CF-CST CF-CST'
