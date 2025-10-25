@@ -10,7 +10,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-/// 解析并拆分 CIDR（自动补齐小段为标准CIDR）
+/// 解析CIDR并计算IP数量（自动规范化为标准CIDR格式）
 pub fn parse_and_split_cidr(cidr_str: &str, ip_count: u32) -> Vec<String> {
     match normalize_to_cidr(cidr_str) {
         Some(IpNet::V4(v4)) => split_ipv4_cidr(&v4, ip_count),
@@ -63,16 +63,10 @@ fn split_ipv4_cidr(network: &Ipv4Net, ip_count: u32) -> Vec<String> {
         return vec![format!("{}/24={}", base, ip_count)];
     }
 
+    // 不拆分，只计算总量
     let block_count = 1u32 << (24 - src_prefix);
-    let step = 1u32 << 8; // 256
-    let start_ip = u32::from(network.network()) & (!0u32 << (32 - src_prefix));
-
-    let mut result = Vec::with_capacity(block_count as usize);
-    for i in 0..block_count {
-        let ip = Ipv4Addr::from(start_ip.wrapping_add(i * step));
-        result.push(format!("{}/24={}", ip, ip_count));
-    }
-    result
+    let total = ip_count * block_count;
+    vec![format!("{}/{}={}", network.network(), src_prefix, total)]
 }
 
 fn split_ipv6_cidr(network: &Ipv6Net, ip_count: u32) -> Vec<String> {
@@ -82,16 +76,10 @@ fn split_ipv6_cidr(network: &Ipv6Net, ip_count: u32) -> Vec<String> {
         return vec![format!("{}/48={}", base, ip_count)];
     }
 
+    // 不拆分，只计算总量
     let block_count = 1u128 << (48 - src_prefix as u128);
-    let step = 1u128 << (128 - 48);
-    let start_ip = u128::from(network.network()) & (!0u128 << (128 - src_prefix as u128));
-
-    let mut result = Vec::with_capacity(block_count as usize);
-    for i in 0..block_count {
-        let ip = Ipv6Addr::from(start_ip.wrapping_add(i * step));
-        result.push(format!("{}/48={}", ip, ip_count));
-    }
-    result
+    let total = ip_count as u128 * block_count;
+    vec![format!("{}/{}={}", network.network(), src_prefix, total)]
 }
 
 /// 删除旧文件
