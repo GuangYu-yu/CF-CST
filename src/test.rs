@@ -2,47 +2,21 @@ use std::fs;
 use std::fs::File;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
-use ipnet::IpNet;
-use ipnet_trie::IpnetTrie;
 use std::net::IpAddr;
 use colored::Colorize;
 use shell_words;
 
 use crate::csv;
 
-/// 将 IpAddr 转换为 IpNet，IPv4 转换为 /32，IPv6 转换为 /128
-fn ip_to_ipnet(ip: IpAddr) -> IpNet {
-    match ip {
-        IpAddr::V4(addr) => IpNet::new(IpAddr::V4(addr), 32).unwrap(),
-        IpAddr::V6(addr) => IpNet::new(IpAddr::V6(addr), 128).unwrap(),
-    }
-}
 /// 流式处理 CloudflareST 测速结果文件
 pub fn process_cloudflare_results(
     temp_result_file: &str,
-    cidr_file: &str,
     output_file: Option<&str>,
     output_txt: Option<&str>,
     limit_count: Option<usize>,
     select_ipv4: Option<u128>,
     select_ipv6: Option<u128>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 读取 CIDR 文件
-    let cidr_entries: Vec<(IpNet, String)> = BufReader::new(File::open(cidr_file)?)
-        .lines()
-        .filter_map(Result::ok)
-        .filter_map(|line| {
-            line.split_once('=')
-                .and_then(|(cidr, dc)| cidr.trim().parse::<IpNet>().ok().map(|net| (net, dc.trim().to_string())))
-        })
-        .collect();
-
-    // 构建前缀树
-    let mut trie: IpnetTrie<String> = IpnetTrie::new();
-    for (net, _) in &cidr_entries {
-        trie.insert(*net, net.to_string());
-    }
-
     // 初始化数据结构
     let mut cidr_data: HashMap<String, (Vec<f64>, Vec<f64>, HashSet<String>)> = HashMap::new();
     let mut datacenter_stats: HashMap<String, (usize, Vec<f64>, Vec<f64>)> = HashMap::new();
@@ -72,19 +46,20 @@ pub fn process_cloudflare_results(
         entry.1.push(latency);
         entry.2.push(loss_rate);
 
-        // 前缀树匹配 CIDR
-        let ip_net = ip_to_ipnet(ip);
-        if let Some((_net, cidr_str)) = trie.longest_match(&ip_net) {
-            let entry = cidr_data.entry(cidr_str.clone())
-                .or_insert((Vec::with_capacity(10), Vec::with_capacity(10), HashSet::new()));
-            entry.0.push(latency);
-            entry.1.push(loss_rate);
-            entry.2.insert(datacenter.clone());
-
-            // 更新数据中心 CIDR 集合
+        // 使用动态归类逻辑，将IP归类到/24或/48 CIDR
+        csv::insert_measurement(
+            &mut cidr_data,
+            &ip.to_string(),
+            latency,
+            loss_rate,
+            &datacenter,
+        );
+        
+        // 更新数据中心 CIDR 集合（使用动态归类的CIDR）
+        if let Some(bucket) = csv::normalize_ip_to_bucket(&ip.to_string()) {
             datacenter_cidrs.entry(datacenter.clone())
                 .or_insert_with(HashSet::new)
-                .insert(cidr_str.clone());
+                .insert(bucket);
         }
     }
 
@@ -198,7 +173,6 @@ pub fn execute_cloudflare_st(
         Ok(status) if status.success() => {
             process_cloudflare_results(
                 &temp_result_file,
-                cidr_file,
                 output_file,
                 output_txt,
                 limit_count,
