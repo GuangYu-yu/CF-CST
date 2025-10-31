@@ -159,28 +159,26 @@ pub fn print_help() {
     let mut table = Table::new();
     table.set_format(*format::consts::FORMAT_CLEAN);
 
-    macro_rules! add_arg {
-        ($name:expr, $desc:expr, $default:expr) => {
-            table.add_row(Row::new(vec![
-                Cell::new(&format!(" {:<12}", $name.green())),
-                Cell::new(&format!("{:<16}", $desc)),
-                Cell::new(&format!("{:<10}", $default.dimmed())),
-            ]));
-        };
+    fn add_arg(table: &mut Table, name: &str, desc: &str, default: &str) {
+        table.add_row(Row::new(vec![
+            Cell::new(&format!(" {:<12}", name.green())),
+            Cell::new(&format!("{:<16}", desc)),
+            Cell::new(&format!("{:<10}", default.dimmed())),
+        ]));
     }
 
-    add_arg!("-f", "指定测速使用的可执行程序文件名", CLOUDFLAREST_RUST);
-    add_arg!("-cidr", "指定要解析的 CIDR 地址", "无");
-    add_arg!("-cf", "从指定文件获取 CIDR 列表", "无");
-    add_arg!("-cu", "从URL远程获取 CIDR 列表", "无");
-    add_arg!("-ic", "从每个 CIDR 中分别随机选取的 IP 数量", "2");
-    add_arg!("-s4", "为 IPv4 CIDR 附加数量后缀", "无");
-    add_arg!("-s6", "为 IPv6 CIDR 附加数量后缀", "无");
-    add_arg!("-ca", &format!("可传递给测速程序的参数: {}", ALLOWED_CLOUDFLARE_ARGS.join(" ")), "无");
-    add_arg!("-o", "指定输出 CSV 文件名", "CIDR-Result.csv");
-    add_arg!("-ot", "指定输出 TXT 文件名", "ip.txt");
-    add_arg!("-lc", "限制写入文件的条目数量", "无限制");
-    add_arg!("-sc", "跳过删除临时文件", "false");
+    add_arg(&mut table, "-f", "指定测速使用的可执行程序文件名", CLOUDFLAREST_RUST);
+    add_arg(&mut table, "-cidr", "指定要解析的 CIDR 地址", "无");
+    add_arg(&mut table, "-cf", "从指定文件获取 CIDR 列表", "无");
+    add_arg(&mut table, "-cu", "从URL远程获取 CIDR 列表", "无");
+    add_arg(&mut table, "-ic", "从每个 CIDR 中分别随机选取的 IP 数量", "2");
+    add_arg(&mut table, "-s4", "为 IPv4 CIDR 附加数量后缀", "无");
+    add_arg(&mut table, "-s6", "为 IPv6 CIDR 附加数量后缀", "无");
+    add_arg(&mut table, "-ca", &format!("可传递给测速程序的参数: {}", ALLOWED_CLOUDFLARE_ARGS.join(" ")), "无");
+    add_arg(&mut table, "-o", "指定输出 CSV 文件名", "CIDR-Result.csv");
+    add_arg(&mut table, "-ot", "指定输出 TXT 文件名", "ip.txt");
+    add_arg(&mut table, "-lc", "限制写入文件的条目数量", "无限制");
+    add_arg(&mut table, "-sc", "跳过删除临时文件", "false");
 
     table.printstd();
 }
