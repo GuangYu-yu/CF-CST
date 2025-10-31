@@ -154,8 +154,6 @@ pub fn parse_args() -> Args {
 }
 
 pub fn print_help() {
-    println!("{}", "# CF-CST".bold().blue());
-
     let mut table = Table::new();
     table.set_format(*format::consts::FORMAT_CLEAN);
 
