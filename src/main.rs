@@ -1,23 +1,17 @@
 use colored::Colorize;
 use std::fs;
 
-// 定义统一的错误、信息和警告输出宏
-macro_rules! error_println {
-    ($($arg:tt)*) => {
-        eprintln!("{} {}", "[错误]".red().bold(), format!($($arg)*))
-    };
+// 定义统一的错误、信息和警告输出函数
+pub fn error_println(args: std::fmt::Arguments<'_>) {
+    eprintln!("{} {}", "[错误]".red().bold(), args);
 }
 
-macro_rules! info_println {
-    ($($arg:tt)*) => {
-        println!("{} {}", "[信息]".cyan().bold(), format!($($arg)*))
-    };
+pub fn info_println(args: std::fmt::Arguments<'_>) {
+    println!("{} {}", "[信息]".cyan().bold(), args);
 }
 
-macro_rules! warning_println {
-    ($($arg:tt)*) => {
-        println!("{} {}", "[警告]".yellow().bold(), format!($($arg)*))
-    };
+pub fn warning_println(args: std::fmt::Arguments<'_>) {
+    println!("{} {}", "[警告]".yellow().bold(), args);
 }
 
 // CloudflareST-Rust 全局常量，根据平台不同设置不同的值
@@ -42,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         || args.cidr_file.as_deref().map_or(false, |s| !s.is_empty());
 
     if !has_cidr_source {
-        info_println!("没有提供 CIDR 来源");
+        info_println(format_args!("没有提供 CIDR 来源"));
         return Ok(());
     }
 
@@ -74,10 +68,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fs::remove_file(file_path).ok();
             }
         } else {
-            info_println!("跳过临时文件清理");
+            info_println(format_args!("跳过临时文件清理"));
         }
     }
 
-    info_println!("CIDR 测速完毕");
+    info_println(format_args!("CIDR 测速完毕"));
     Ok(())
 }

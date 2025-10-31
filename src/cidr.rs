@@ -1,4 +1,3 @@
-use colored::*;
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use std::{
     fs::{self, File},
@@ -9,6 +8,8 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+use crate::{error_println, warning_println};
 
 /// 解析CIDR并计算IP数量（自动规范化为标准CIDR格式）
 pub fn parse_and_split_cidr(cidr_str: &str, ip_count: u32) -> Vec<String> {
@@ -138,14 +139,14 @@ pub fn collect_cidr_sources(cidr_text: &str, cidr_url: &str, cidr_file: &str, ip
     let subnets: Vec<String> = merged.into_iter().flat_map(|cidr| parse_and_split_cidr(&cidr, ip_count)).collect();
 
     if subnets.is_empty() {
-        error_println!("未找到有效CIDR");
+        error_println(format_args!("未找到有效CIDR"));
         return None;
     }
 
     match write_to_temp_file(&subnets) {
         Ok(path) => Some(path),
         Err(e) => {
-            error_println!("写入结果失败: {}", e);
+            error_println(format_args!("写入结果失败: {}", e));
             None
         }
     }
@@ -197,7 +198,7 @@ fn get_cidr_from_url(url: &str) -> io::Result<Vec<String>> {
                     .collect());
             }
             Ok(_) | Err(_) if attempt < 3 => {
-                warning_println!("curl失败，{}秒后重试 ({}/3)", 3, attempt);
+                warning_println(format_args!("curl失败，{}秒后重试 ({}/3)", 3, attempt));
                 thread::sleep(Duration::from_secs(3));
             }
             _ => break,

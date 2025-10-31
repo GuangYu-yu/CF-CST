@@ -3,11 +3,11 @@ use std::fs::File;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::net::IpAddr;
-use colored::Colorize;
 use shell_words;
 
 use crate::csv;
 use crate::CLOUDFLAREST_RUST;
+use crate::{error_println, info_println};
 
 /// 流式处理 CloudflareST 测速结果文件
 pub fn process_cloudflare_results(
@@ -130,7 +130,7 @@ fn generate_outputs(
         .collect();
 
     if !files.is_empty() {
-        info_println!("已生成结果文件: {}", files.join(" 和 "));
+        info_println(format_args!("已生成结果文件: {}", files.join(" 和 ")));
     }
 
     Ok(sorted_cidrs)
@@ -146,7 +146,7 @@ pub fn execute_cloudflare_st(
     select_ipv4: Option<u128>,
     select_ipv6: Option<u128>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    info_println!("执行 {}", CLOUDFLAREST_RUST);
+    info_println(format_args!("执行 {}", CLOUDFLAREST_RUST));
 
     #[cfg(target_os = "windows")] let exe_path = format!(".\\{}", CLOUDFLAREST_RUST);
     #[cfg(any(target_os = "linux", target_os = "macos"))] let exe_path = format!("./{}", CLOUDFLAREST_RUST);
@@ -180,8 +180,8 @@ pub fn execute_cloudflare_st(
                 select_ipv6,
             )?;
         },
-        Ok(status) => error_println!("{}执行失败，退出码: {:?}", CLOUDFLAREST_RUST, status.code()),
-        Err(e) => error_println!("执行{}时出错: {}", CLOUDFLAREST_RUST, e),
+        Ok(status) => error_println(format_args!("{}执行失败，退出码: {:?}", CLOUDFLAREST_RUST, status.code())),
+        Err(e) => error_println(format_args!("执行{}时出错: {}", CLOUDFLAREST_RUST, e)),
     }
 
     Ok(temp_result_file)

@@ -3,6 +3,7 @@ use prettytable::{Cell, Row, Table, format};
 use std::collections::HashSet;
 use std::env;
 use crate::CLOUDFLAREST_RUST;
+use crate::error_println;
 
 const ALLOWED_CLOUDFLARE_ARGS: &[&str] = &[
     "t", "tp", "colo", "tl", "tll", "tlr", "n", "timeout", "intf", "hu"
@@ -71,8 +72,7 @@ impl Args {
                 "sc" => parsed.skip_cleanup = true,
                 _ => {
                     print_help();
-                    error_println!("无效的参数: {}", k);
-                    std::process::exit(1);
+                    error_and_exit(format_args!("无效的参数: {}", k));
                 }
             }
         }
@@ -111,8 +111,7 @@ impl Args {
             if part.starts_with('-') {
                 let key = part.trim_start_matches('-');
                 if !allowed_set.contains(key) {
-                    error_println!("尝试传递不允许的参数: -{}", key);
-                    std::process::exit(1);
+                    error_and_exit(format_args!("尝试传递不允许的参数: -{}", key));
                 }
             }
         }
@@ -146,7 +145,7 @@ pub fn parse_args() -> Args {
 
     if !errors.is_empty() {
         for err in &errors {
-            error_println!("{}", err);
+            error_println(format_args!("{}", err));
         }
         std::process::exit(1);
     }
@@ -184,4 +183,10 @@ pub fn print_help() {
     add_arg!("-sc", "跳过删除临时文件", "false");
 
     table.printstd();
+}
+
+// 打印错误信息并退出程序
+pub fn error_and_exit(args: std::fmt::Arguments<'_>) -> ! {
+    error_println(args);
+    std::process::exit(1);
 }
