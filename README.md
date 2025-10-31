@@ -10,21 +10,22 @@
 
 ### 获取程序
 
-#### 获取 CloudflareST-Rust
+#### CF-CST
 
 ```bash
-bash -c 'ARCH=$(uname -m); FILENAME="CloudflareST-Rust_linux_$([ "$ARCH" = "x86_64" ] && echo "amd64" || echo "arm64").tar.gz"; curl -ksSL https://github.com/GuangYu-yu/CloudFlare-DDNS/releases/download/setup/setup.sh | bash -s -- GuangYu-yu CloudflareST-Rust main-latest "$FILENAME" CloudflareST-Rust'
+bash -c 'ARCH=$( [ "$(uname -m)" = x86_64 ] && echo amd64 || echo arm64 ); curl -fsSL https://github.com/GuangYu-yu/CloudFlare-DDNS/releases/download/setup/setup.sh | bash -s -- GuangYu-yu CF-CST main-latest CF-CST_linux_$ARCH.tar.gz CF-CST'
 ```
 
-#### 获取 CF-CST
+#### CloudflareST-Rust + CF-CST
+
 ```bash
-bash -c 'ARCH=$(uname -m); FILENAME="CF-CST_linux_$([ "$ARCH" = "x86_64" ] && echo "amd64" || echo "arm64").tar.gz"; curl -ksSL https://github.com/GuangYu-yu/CloudFlare-DDNS/releases/download/setup/setup.sh | bash -s -- GuangYu-yu CF-CST main-latest "$FILENAME" CF-CST'
+bash -c 'ARCH=$( [ "$(uname -m)" = x86_64 ] && echo amd64 || echo arm64 ); curl -fsSL https://github.com/GuangYu-yu/CloudFlare-DDNS/releases/download/setup/setup.sh | bash -s -- GuangYu-yu CloudflareST-Rust main-latest CloudflareST-Rust_linux_$ARCH.tar.gz CloudflareST-Rust GuangYu-yu CF-CST main-latest CF-CST_linux_$ARCH.tar.gz CF-CST'
 ```
 
-#### 一次性获取 CloudflareST-Rust 和 CF-CST
+#### CloudflareST-Rust + CFRS + CF-CST
 
 ```bash
-bash -c 'download() { local project=$1 exec=$2; ARCH=$(uname -m); FILENAME="${exec}_linux_$([ "$ARCH" = "x86_64" ] && echo "amd64" || echo "arm64").tar.gz"; curl -ksSL https://github.com/GuangYu-yu/CloudFlare-DDNS/releases/download/setup/setup.sh | bash -s -- GuangYu-yu "$project" main-latest "$FILENAME" "$exec"; }; download CloudflareST-Rust CloudflareST-Rust && download CF-CST CF-CST'
+bash -c 'ARCH=$( [ "$(uname -m)" = x86_64 ] && echo amd64 || echo arm64 ); curl -fsSL https://github.com/GuangYu-yu/CloudFlare-DDNS/releases/download/setup/setup.sh | bash -s -- GuangYu-yu CloudflareST-Rust main-latest CloudflareST-Rust_linux_$ARCH.tar.gz CloudflareST-Rust GuangYu-yu CloudFlare-DDNS main-latest CFRS_linux_$ARCH.tar.gz CFRS GuangYu-yu CF-CST main-latest CF-CST_linux_$ARCH.tar.gz CF-CST'
 ```
 
 ### 命令行参数
