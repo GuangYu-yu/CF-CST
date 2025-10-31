@@ -7,6 +7,7 @@ use colored::Colorize;
 use shell_words;
 
 use crate::csv;
+use crate::CLOUDFLAREST_RUST;
 
 /// 流式处理 CloudflareST 测速结果文件
 pub fn process_cloudflare_results(
@@ -138,7 +139,6 @@ fn generate_outputs(
 /// 执行 CloudflareST 并处理结果
 pub fn execute_cloudflare_st(
     cloudflare_args: &str,
-    file_name: &str,
     cidr_file: &str,
     output_file: Option<&str>,
     output_txt: Option<&str>,
@@ -146,10 +146,10 @@ pub fn execute_cloudflare_st(
     select_ipv4: Option<u128>,
     select_ipv6: Option<u128>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    println!("{} 执行 CloudflareST-Rust", "[信息]".cyan().bold());
+    println!("{} 执行 {}", "[信息]".cyan().bold(), CLOUDFLAREST_RUST);
 
-    #[cfg(target_os = "windows")] let exe_path = format!(".\\{}", file_name);
-    #[cfg(any(target_os = "linux", target_os = "macos"))] let exe_path = format!("./{}", file_name);
+    #[cfg(target_os = "windows")] let exe_path = format!(".\\{}", CLOUDFLAREST_RUST);
+    #[cfg(any(target_os = "linux", target_os = "macos"))] let exe_path = format!("./{}", CLOUDFLAREST_RUST);
 
     let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
     let temp_result_file = format!("result_{}.csv", timestamp);
@@ -180,8 +180,8 @@ pub fn execute_cloudflare_st(
                 select_ipv6,
             )?;
         },
-        Ok(status) => eprintln!("{} CloudflareST执行失败，退出码: {:?}", "[错误]".red().bold(), status.code()),
-        Err(e) => eprintln!("{} 执行CloudflareST时出错: {}", "[错误]".red().bold(), e),
+        Ok(status) => eprintln!("{} {}执行失败，退出码: {:?}", "[错误]".red().bold(), CLOUDFLAREST_RUST, status.code()),
+        Err(e) => eprintln!("{} 执行{}时出错: {}", "[错误]".red().bold(), CLOUDFLAREST_RUST, e),
     }
 
     Ok(temp_result_file)

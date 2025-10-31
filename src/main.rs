@@ -1,6 +1,13 @@
 use colored::Colorize;
 use std::fs;
 
+// CloudflareST-Rust 全局常量，根据平台不同设置不同的值
+#[cfg(target_os = "windows")]
+pub const CLOUDFLAREST_RUST: &str = "CloudflareST-Rust.exe";
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub const CLOUDFLAREST_RUST: &str = "CloudflareST-Rust";
+
 mod args;
 mod cidr;
 mod csv;
@@ -34,7 +41,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let cloudflare_args = args.cloudflare_args.as_deref().unwrap();
         let temp_result_file = execute_cloudflare_st(
             cloudflare_args,
-            &args.file_name,
             &temp_cidr_file,
             args.output_file.as_deref(),
             args.output_txt.as_deref(),

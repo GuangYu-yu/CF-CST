@@ -2,11 +2,7 @@ use colored::*;
 use prettytable::{Cell, Row, Table, format};
 use std::collections::HashSet;
 use std::env;
-
-#[cfg(target_os = "windows")]
-const DEFAULT_EXECUTABLE: &str = "CloudflareST-Rust.exe";
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-const DEFAULT_EXECUTABLE: &str = "CloudflareST-Rust";
+use crate::CLOUDFLAREST_RUST;
 
 const ALLOWED_CLOUDFLARE_ARGS: &[&str] = &[
     "t", "tp", "colo", "tl", "tll", "tlr", "n", "timeout", "intf", "hu"
@@ -32,7 +28,7 @@ pub struct Args {
 impl Args {
     pub fn new() -> Self {
         Self {
-            file_name: DEFAULT_EXECUTABLE.to_string(),
+            file_name: CLOUDFLAREST_RUST.to_string(),
             help: false,
             cidr: Some("".to_string()),
             cidr_file: Some("".to_string()),
@@ -174,7 +170,7 @@ pub fn print_help() {
         };
     }
 
-    add_arg!("-f", "指定 CloudflareST-Rust 可执行程序文件名", DEFAULT_EXECUTABLE);
+    add_arg!("-f", "指定测速使用的可执行程序文件名", CLOUDFLAREST_RUST);
     add_arg!("-cidr", "指定要解析的 CIDR 地址", "无");
     add_arg!("-cf", "从指定文件获取 CIDR 列表", "无");
     add_arg!("-cu", "从URL远程获取 CIDR 列表", "无");
