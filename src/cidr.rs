@@ -138,14 +138,14 @@ pub fn collect_cidr_sources(cidr_text: &str, cidr_url: &str, cidr_file: &str, ip
     let subnets: Vec<String> = merged.into_iter().flat_map(|cidr| parse_and_split_cidr(&cidr, ip_count)).collect();
 
     if subnets.is_empty() {
-        eprintln!("\n{} 未找到有效CIDR", "[错误]".red().bold());
+        error_println!("未找到有效CIDR");
         return None;
     }
 
     match write_to_temp_file(&subnets) {
         Ok(path) => Some(path),
         Err(e) => {
-            eprintln!("{} 写入结果失败: {}", "[错误]".red().bold(), e);
+            error_println!("写入结果失败: {}", e);
             None
         }
     }
@@ -197,12 +197,7 @@ fn get_cidr_from_url(url: &str) -> io::Result<Vec<String>> {
                     .collect());
             }
             Ok(_) | Err(_) if attempt < 3 => {
-                eprintln!(
-                    "{} curl失败，{}秒后重试 ({}/3)",
-                    "[警告]".yellow().bold(),
-                    3,
-                    attempt
-                );
+                warning_println!("curl失败，{}秒后重试 ({}/3)", 3, attempt);
                 thread::sleep(Duration::from_secs(3));
             }
             _ => break,

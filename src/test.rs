@@ -130,7 +130,7 @@ fn generate_outputs(
         .collect();
 
     if !files.is_empty() {
-        println!("{} 已生成结果文件: {}", "[信息]".cyan().bold(), files.join(" 和 "));
+        info_println!("已生成结果文件: {}", files.join(" 和 "));
     }
 
     Ok(sorted_cidrs)
@@ -146,7 +146,7 @@ pub fn execute_cloudflare_st(
     select_ipv4: Option<u128>,
     select_ipv6: Option<u128>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    println!("{} 执行 {}", "[信息]".cyan().bold(), CLOUDFLAREST_RUST);
+    info_println!("执行 {}", CLOUDFLAREST_RUST);
 
     #[cfg(target_os = "windows")] let exe_path = format!(".\\{}", CLOUDFLAREST_RUST);
     #[cfg(any(target_os = "linux", target_os = "macos"))] let exe_path = format!("./{}", CLOUDFLAREST_RUST);
@@ -180,8 +180,8 @@ pub fn execute_cloudflare_st(
                 select_ipv6,
             )?;
         },
-        Ok(status) => eprintln!("{} {}执行失败，退出码: {:?}", "[错误]".red().bold(), CLOUDFLAREST_RUST, status.code()),
-        Err(e) => eprintln!("{} 执行{}时出错: {}", "[错误]".red().bold(), CLOUDFLAREST_RUST, e),
+        Ok(status) => error_println!("{}执行失败，退出码: {:?}", CLOUDFLAREST_RUST, status.code()),
+        Err(e) => error_println!("执行{}时出错: {}", CLOUDFLAREST_RUST, e),
     }
 
     Ok(temp_result_file)

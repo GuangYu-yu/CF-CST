@@ -71,7 +71,7 @@ impl Args {
                 "sc" => parsed.skip_cleanup = true,
                 _ => {
                     print_help();
-                    println!("{} 无效的参数: {}", "[错误]".red().bold(), k);
+                    error_println!("无效的参数: {}", k);
                     std::process::exit(1);
                 }
             }
@@ -111,7 +111,7 @@ impl Args {
             if part.starts_with('-') {
                 let key = part.trim_start_matches('-');
                 if !allowed_set.contains(key) {
-                    eprintln!("{} 尝试传递不允许的参数: -{}", "[错误]".red().bold(), key);
+                    error_println!("尝试传递不允许的参数: -{}", key);
                     std::process::exit(1);
                 }
             }
@@ -131,22 +131,22 @@ pub fn parse_args() -> Args {
     }
 
     if !std::path::Path::new(&args.file_name).exists() {
-        errors.push("错误: 指定的测速程序 file_name 不存在".to_string());
+        errors.push("指定的测速程序 file_name 不存在".to_string());
     }
 
     if let Some(cidr_file) = &args.cidr_file {
         if !cidr_file.is_empty() && !std::path::Path::new(cidr_file).exists() {
-            errors.push("错误: 指定的文件不存在".to_string());
+            errors.push("指定的文件不存在".to_string());
         }
     }
 
     if args.cidr.is_none() && args.cidr_file.is_none() && args.cidr_url.is_none() {
-        errors.push("错误: 必须指定一个或多个 CIDR 来源参数 (-cidr, -cf 或 -cu)".to_string());
+        errors.push("必须指定一个或多个 CIDR 来源参数 (-cidr, -cf 或 -cu)".to_string());
     }
 
     if !errors.is_empty() {
         for err in &errors {
-            eprintln!("{}", err.red().bold());
+            error_println!("{}", err);
         }
         std::process::exit(1);
     }

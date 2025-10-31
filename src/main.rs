@@ -1,6 +1,25 @@
 use colored::Colorize;
 use std::fs;
 
+// 定义统一的错误、信息和警告输出宏
+macro_rules! error_println {
+    ($($arg:tt)*) => {
+        eprintln!("{} {}", "[错误]".red().bold(), format!($($arg)*))
+    };
+}
+
+macro_rules! info_println {
+    ($($arg:tt)*) => {
+        println!("{} {}", "[信息]".cyan().bold(), format!($($arg)*))
+    };
+}
+
+macro_rules! warning_println {
+    ($($arg:tt)*) => {
+        println!("{} {}", "[警告]".yellow().bold(), format!($($arg)*))
+    };
+}
+
 // CloudflareST-Rust 全局常量，根据平台不同设置不同的值
 #[cfg(target_os = "windows")]
 pub const CLOUDFLAREST_RUST: &str = "CloudflareST-Rust.exe";
@@ -23,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         || args.cidr_file.as_deref().map_or(false, |s| !s.is_empty());
 
     if !has_cidr_source {
-        println!("{} 没有提供 CIDR 来源", "[信息]".cyan().bold());
+        info_println!("没有提供 CIDR 来源");
         return Ok(());
     }
 
@@ -55,10 +74,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 fs::remove_file(file_path).ok();
             }
         } else {
-            println!("{} 跳过临时文件清理", "[信息]".cyan().bold());
+            info_println!("跳过临时文件清理");
         }
     }
 
-    println!("{} CIDR 测速完毕", "[信息]".cyan().bold());
+    info_println!("CIDR 测速完毕");
     Ok(())
 }
