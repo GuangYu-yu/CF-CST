@@ -24,8 +24,26 @@ bash -c 'ARCH=$( [ "$(uname -m)" = x86_64 ] && echo amd64 || echo arm64 ); curl 
 
 #### CloudflareST-Rust + CFRS + CF-CST
 
+##### bash
+
 ```bash
-bash -c 'ARCH=$( [ "$(uname -m)" = x86_64 ] && echo amd64 || echo arm64 ); curl -fsSL https://github.com/GuangYu-yu/CloudFlare-DDNS/releases/download/setup/setup.sh | bash -s -- GuangYu-yu CloudflareST-Rust main-latest CloudflareST-Rust_linux_$ARCH.tar.gz CloudflareST-Rust GuangYu-yu CloudFlare-DDNS main-latest CFRS_linux_$ARCH.tar.gz CFRS GuangYu-yu CF-CST main-latest CF-CST_linux_$ARCH.tar.gz CF-CST'
+sh -c '
+OS=$(uname -s | tr "[:upper:]" "[:lower:]")
+[ "$OS" = "darwin" ] && OS="macos"
+[ "$OS" = "linux" ] || OS="linux"
+ARCH=$( [ "$(uname -m)" = "x86_64" ] && echo amd64 || echo arm64)
+URL="https://github.com/GuangYu-yu/CloudFlare-DDNS/releases/download/setup/setup.sh"
+SCRIPT=$(wget -qO- $URL 2>/dev/null || curl -fsSL $URL)
+echo "$SCRIPT" | sh -s GuangYu-yu CloudflareST-Rust main-latest CloudflareST-Rust_${OS}_$ARCH.tar.gz CloudflareST-Rust \
+GuangYu-yu CloudFlare-DDNS main-latest CFRS_${OS}_$ARCH.tar.gz CFRS \
+GuangYu-yu CF-CST main-latest CF-CST_${OS}_$ARCH.tar.gz CF-CST
+'
+```
+
+##### PowerShell
+
+```powershell
+$ARCH=if($env:PROCESSOR_ARCHITECTURE -eq "AMD64"){"amd64"}else{"arm64"}; & ([scriptblock]::Create((iwr "https://raw.githubusercontent.com/GuangYu-yu/CloudFlare-DDNS/refs/heads/sh/setup.ps1" -UseBasicParsing).Content)) "GuangYu-yu","CloudflareST-Rust","main-latest","CloudflareST-Rust_windows_$ARCH.zip","CloudflareST-Rust","GuangYu-yu","CloudFlare-DDNS","main-latest","CFRS_windows_$ARCH.zip","CFRS","GuangYu-yu","CF-CST","main-latest","CF-CST_windows_$ARCH.zip","CF-CST"
 ```
 
 ### 命令行参数
