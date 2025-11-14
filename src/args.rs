@@ -1,5 +1,3 @@
-use colored::*;
-use prettytable::{Cell, Row, Table, format};
 use std::collections::HashSet;
 use std::env;
 use crate::CLOUDFLAREST_RUST;
@@ -24,6 +22,8 @@ pub struct Args {
     pub output_txt: Option<String>,
     pub limit_count: Option<usize>,
     pub skip_cleanup: bool,
+    pub ipv4_prefix: Option<u8>,
+    pub ipv6_prefix: Option<u8>,
 }
 
 impl Args {
@@ -42,6 +42,8 @@ impl Args {
             output_txt: Some("ip.txt".to_string()),
             limit_count: None,
             skip_cleanup: false,
+            ipv4_prefix: Some(24),
+            ipv6_prefix: Some(48),
         }
     }
 
@@ -70,6 +72,8 @@ impl Args {
                 "ot" => parsed.output_txt = v_opt,
                 "lc" => parsed.limit_count = v_opt.and_then(|v| v.parse().ok()),
                 "sc" => parsed.skip_cleanup = true,
+                "v4p" => parsed.ipv4_prefix = v_opt.and_then(|v| v.parse::<u8>().ok()),
+                "v6p" => parsed.ipv6_prefix = v_opt.and_then(|v| v.parse::<u8>().ok()),
                 _ => {
                     print_help();
                     error_and_exit(format_args!("无效的参数: {}", k));
@@ -130,13 +134,12 @@ pub fn parse_args() -> Args {
     }
 
     if !std::path::Path::new(&args.file_name).exists() {
-        errors.push("指定的测速程序 file_name 不存在".to_string());
+        errors.push(format!("指定的测速程序 {} 不存在", args.file_name));
     }
 
-    if let Some(cidr_file) = &args.cidr_file {
-        if !cidr_file.is_empty() && !std::path::Path::new(cidr_file).exists() {
-            errors.push("指定的文件不存在".to_string());
-        }
+    if let Some(cidr_file) = &args.cidr_file
+        && !cidr_file.is_empty() && !std::path::Path::new(cidr_file).exists() {
+        errors.push("指定的文件不存在".to_string());
     }
 
     if args.cidr.is_none() && args.cidr_file.is_none() && args.cidr_url.is_none() {
@@ -153,32 +156,76 @@ pub fn parse_args() -> Args {
     args
 }
 
-pub fn print_help() {
-    let mut table = Table::new();
-    table.set_format(*format::consts::FORMAT_CLEAN);
+// 计算显示宽度
+fn approximate_display_width_no_color(s: &str) -> usize {
+    let mut width = 0;
+    let mut in_escape = false; 
 
-    fn add_arg(table: &mut Table, name: &str, desc: &str, default: &str) {
-        table.add_row(Row::new(vec![
-            Cell::new(&format!(" {:<12}", name.green())),
-            Cell::new(&format!("{:<16}", desc)),
-            Cell::new(&format!("{:<10}", default.dimmed())),
-        ]));
+    for c in s.chars() {
+        if c == '\x1b' {
+            in_escape = true;
+            continue;
+        }
+        if in_escape {
+            if c == 'm' || c.is_alphabetic() {
+                in_escape = false;
+            }
+            continue;
+        }
+        // 非 ASCII (中文) 宽度为 2，ASCII 宽度为 1
+        width += if c.is_ascii() { 1 } else { 2 };
     }
+    width
+}
 
-    add_arg(&mut table, "-f", "指定测速使用的可执行程序文件名", CLOUDFLAREST_RUST);
-    add_arg(&mut table, "-cidr", "指定要解析的 CIDR 地址", "无");
-    add_arg(&mut table, "-cf", "从指定文件获取 CIDR 列表", "无");
-    add_arg(&mut table, "-cu", "从URL远程获取 CIDR 列表", "无");
-    add_arg(&mut table, "-ic", "从每个 CIDR 中分别随机选取的 IP 数量", "2");
-    add_arg(&mut table, "-s4", "为 IPv4 CIDR 附加数量后缀", "无");
-    add_arg(&mut table, "-s6", "为 IPv6 CIDR 附加数量后缀", "无");
-    add_arg(&mut table, "-ca", &format!("可传递给测速程序的参数: {}", ALLOWED_CLOUDFLARE_ARGS.join(" ")), "无");
-    add_arg(&mut table, "-o", "指定输出 CSV 文件名", "CIDR-Result.csv");
-    add_arg(&mut table, "-ot", "指定输出 TXT 文件名", "ip.txt");
-    add_arg(&mut table, "-lc", "限制写入文件的条目数量", "无限制");
-    add_arg(&mut table, "-sc", "跳过删除临时文件", "false");
+// 格式化和打印单个参数行
+fn print_arg_row(name: &str, desc: &str, default: &str) {
+    // 固定的列宽
+    const COL_NAME_WIDTH: usize = 9;
+    const COL_DESC_WIDTH: usize = 35;
+    const COL_DEFAULT_WIDTH: usize = 10;
 
-    table.printstd();
+    // 1. 格式化参数名：绿色 (\x1b[32m)
+    let name_colored = format!("\x1b[32m{}\x1b[0m", name);
+    let name_display_width = approximate_display_width_no_color(&name_colored);
+    let name_padding = COL_NAME_WIDTH.saturating_sub(name_display_width);
+    
+    // 2. 格式化描述 (默认颜色)
+    let desc_display_width = approximate_display_width_no_color(desc);
+    let desc_padding = COL_DESC_WIDTH.saturating_sub(desc_display_width);
+
+    // 3. 格式化默认值：暗淡色 (\x1b[2m)
+    let default_colored = format!("\x1b[2m{}\x1b[0m", default);
+    let default_display_width = approximate_display_width_no_color(&default_colored);
+    let default_padding = COL_DEFAULT_WIDTH.saturating_sub(default_display_width);
+
+    // 4. 打印整行 (左侧增加 1 个空格作为缩进)
+    println!(
+        " {}{}{}{}{}{}",
+        name_colored,
+        " ".repeat(name_padding),
+        desc,
+        " ".repeat(desc_padding),
+        default_colored,
+        " ".repeat(default_padding)
+    );
+}
+
+pub fn print_help() {
+    print_arg_row("-f", "指定测速使用的可执行程序文件名", CLOUDFLAREST_RUST);
+    print_arg_row("-cidr", "指定要解析的 CIDR 地址", "无");
+    print_arg_row("-cf", "从指定文件获取 CIDR 列表", "无");
+    print_arg_row("-cu", "从URL远程获取 CIDR 列表", "无");
+    print_arg_row("-ic", "每个 CIDR 随机选取的 IP 数量", "2");
+    print_arg_row("-s4", "为 IPv4 CIDR 附加数量后缀", "无");
+    print_arg_row("-s6", "为 IPv6 CIDR 附加数量后缀", "无");
+    print_arg_row("-ca", "向测速程序传递一些参数", "无");
+    print_arg_row("-o", "指定输出 CSV 文件名", "CIDR-Result.csv");
+    print_arg_row("-ot", "指定输出 TXT 文件名", "ip.txt");
+    print_arg_row("-lc", "限制写入文件的条目数量", "无限制");
+    print_arg_row("-sc", "跳过删除临时文件", "false");
+    print_arg_row("v4p", "IPv4 CIDR 前缀长度", "24");
+    print_arg_row("v6p", "IPv6 CIDR 前缀长度", "48");
 }
 
 // 打印错误信息并退出程序

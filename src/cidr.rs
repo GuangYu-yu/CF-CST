@@ -12,33 +12,33 @@ use std::{
 use crate::{error_println, warning_println};
 
 /// 解析CIDR并计算IP数量（自动规范化为标准CIDR格式）
-pub fn parse_and_split_cidr(cidr_str: &str, ip_count: u32) -> Vec<String> {
-    match normalize_to_cidr(cidr_str) {
-        Some(IpNet::V4(v4)) => split_ipv4_cidr(&v4, ip_count),
-        Some(IpNet::V6(v6)) => split_ipv6_cidr(&v6, ip_count),
+pub fn parse_and_split_cidr(cidr_str: &str, ip_count: u32, ipv4_prefix: Option<u8>, ipv6_prefix: Option<u8>) -> Vec<String> {
+    match normalize_to_cidr(cidr_str, ipv4_prefix, ipv6_prefix) {
+        Some(IpNet::V4(v4)) => split_ipv4_cidr(&v4, ip_count, ipv4_prefix),
+        Some(IpNet::V6(v6)) => split_ipv6_cidr(&v6, ip_count, ipv6_prefix),
         _ => Vec::new(),
     }
 }
 
 /// 自动规范化输入为 CIDR 格式
-fn normalize_to_cidr(input: &str) -> Option<IpNet> {
+fn normalize_to_cidr(input: &str, ipv4_prefix: Option<u8>, ipv6_prefix: Option<u8>) -> Option<IpNet> {
+    let ipv4_prefix = ipv4_prefix.unwrap();
+    let ipv6_prefix = ipv6_prefix.unwrap();
+    
     // IPv4 单 IP
     if let Ok(ipv4) = input.parse::<Ipv4Addr>() {
-        let base = Ipv4Addr::from(u32::from(ipv4) & 0xFFFFFF00);
-        return Ipv4Net::new(base, 24).ok().map(IpNet::V4);
+        return Ipv4Net::new(ipv4, ipv4_prefix).ok().map(IpNet::V4);
     }
 
     // IPv6 单 IP
     if let Ok(ipv6) = input.parse::<Ipv6Addr>() {
-        let base = Ipv6Addr::from(u128::from(ipv6) & (!0u128 << (128 - 48)));
-        return Ipv6Net::new(base, 48).ok().map(IpNet::V6);
+        return Ipv6Net::new(ipv6, ipv6_prefix).ok().map(IpNet::V6);
     }
 
     // IPv4 CIDR
     if let Ok(IpNet::V4(net)) = input.parse::<IpNet>() {
-        if net.prefix_len() >= 24 {
-            let base = Ipv4Addr::from(u32::from(net.network()) & 0xFFFFFF00);
-            return Ipv4Net::new(base, 24).ok().map(IpNet::V4);
+        if net.prefix_len() >= ipv4_prefix {
+            return Ipv4Net::new(net.network(), ipv4_prefix).ok().map(IpNet::V4);
         } else {
             return Some(IpNet::V4(net));
         }
@@ -46,9 +46,8 @@ fn normalize_to_cidr(input: &str) -> Option<IpNet> {
 
     // IPv6 CIDR
     if let Ok(IpNet::V6(net)) = input.parse::<IpNet>() {
-        if net.prefix_len() >= 48 {
-            let base = Ipv6Addr::from(u128::from(net.network()) & (!0u128 << (128 - 48)));
-            return Ipv6Net::new(base, 48).ok().map(IpNet::V6);
+        if net.prefix_len() >= ipv6_prefix {
+            return Ipv6Net::new(net.network(), ipv6_prefix).ok().map(IpNet::V6);
         } else {
             return Some(IpNet::V6(net));
         }
@@ -57,28 +56,28 @@ fn normalize_to_cidr(input: &str) -> Option<IpNet> {
     None
 }
 
-fn split_ipv4_cidr(network: &Ipv4Net, ip_count: u32) -> Vec<String> {
+fn split_ipv4_cidr(network: &Ipv4Net, ip_count: u32, ipv4_prefix: Option<u8>) -> Vec<String> {
+    let ipv4_prefix = ipv4_prefix.unwrap();
     let src_prefix = network.prefix_len().max(13);
-    if src_prefix >= 24 {
-        let base = Ipv4Addr::from(u32::from(network.network()) & 0xFFFFFF00);
-        return vec![format!("{}/24={}", base, ip_count)];
+    if src_prefix >= ipv4_prefix {
+        return vec![format!("{}/{}={}", network.network(), ipv4_prefix, ip_count)];
     }
 
     // 不拆分，只计算总量
-    let block_count = 1u32 << (24 - src_prefix);
+    let block_count = 1u32 << ((ipv4_prefix as u32) - (src_prefix as u32));
     let total = ip_count * block_count;
     vec![format!("{}/{}={}", network.network(), src_prefix, total)]
 }
 
-fn split_ipv6_cidr(network: &Ipv6Net, ip_count: u32) -> Vec<String> {
+fn split_ipv6_cidr(network: &Ipv6Net, ip_count: u32, ipv6_prefix: Option<u8>) -> Vec<String> {
+    let ipv6_prefix = ipv6_prefix.unwrap();
     let src_prefix = network.prefix_len().max(32);
-    if src_prefix >= 48 {
-        let base = Ipv6Addr::from(u128::from(network.network()) & (!0u128 << (128 - 48)));
-        return vec![format!("{}/48={}", base, ip_count)];
+    if src_prefix >= ipv6_prefix {
+        return vec![format!("{}/{}={}", network.network(), ipv6_prefix, ip_count)];
     }
 
     // 不拆分，只计算总量
-    let block_count = 1u128 << (48 - src_prefix as u128);
+    let block_count = 1u128 << ((ipv6_prefix as u128) - (src_prefix as u128));
     let total = ip_count as u128 * block_count;
     vec![format!("{}/{}={}", network.network(), src_prefix, total)]
 }
@@ -86,10 +85,9 @@ fn split_ipv6_cidr(network: &Ipv6Net, ip_count: u32) -> Vec<String> {
 /// 删除旧文件
 fn cleanup_old_cidr_files() {
     for entry in fs::read_dir(".").into_iter().flatten().flatten() {
-        if let Some(name) = entry.file_name().to_str() {
-            if name.starts_with("cidr_split_") && name.ends_with(".txt") {
-                let _ = fs::remove_file(entry.path());
-            }
+        if let Some(name) = entry.file_name().to_str()
+            && name.starts_with("cidr_split_") && name.ends_with(".txt") {
+            let _ = fs::remove_file(entry.path());
         }
     }
 }
@@ -113,30 +111,28 @@ pub fn write_to_temp_file(subnets: &[String]) -> io::Result<String> {
 }
 
 /// 收集多来源 CIDR
-pub fn collect_cidr_sources(cidr_text: &str, cidr_url: &str, cidr_file: &str, ip_count: u32) -> Option<String> {
+pub fn collect_cidr_sources(cidr_text: &str, cidr_url: &str, cidr_file: &str, ip_count: u32, ipv4_prefix: Option<u8>, ipv6_prefix: Option<u8>) -> Option<String> {
     let mut sources = Vec::new();
 
     // 文本输入
     sources.extend(cidr_text.split(',').map(str::trim).filter(|s| !s.is_empty()).map(ToString::to_string));
 
     // URL 来源
-    if !cidr_url.is_empty() {
-        if let Ok(url_list) = get_cidr_from_url(cidr_url) {
-            sources.extend(url_list);
-        }
+    if !cidr_url.is_empty()
+        && let Ok(url_list) = get_cidr_from_url(cidr_url) {
+        sources.extend(url_list);
     }
 
     // 文件来源
-    if !cidr_file.is_empty() && Path::new(cidr_file).exists() {
-        if let Ok(file_list) = get_cidr_from_file(cidr_file) {
-            sources.extend(file_list);
-        }
+    if !cidr_file.is_empty() && Path::new(cidr_file).exists()
+        && let Ok(file_list) = get_cidr_from_file(cidr_file) {
+        sources.extend(file_list);
     }
 
     let mut merged: Vec<String> = merge_cidr_list(&sources);
     merged.sort();
 
-    let subnets: Vec<String> = merged.into_iter().flat_map(|cidr| parse_and_split_cidr(&cidr, ip_count)).collect();
+    let subnets: Vec<String> = merged.into_iter().flat_map(|cidr| parse_and_split_cidr(&cidr, ip_count, ipv4_prefix, ipv6_prefix)).collect();
 
     if subnets.is_empty() {
         error_println(format_args!("未找到有效CIDR"));
@@ -212,7 +208,7 @@ fn get_cidr_from_file(file_path: &str) -> io::Result<Vec<String>> {
     let reader = BufReader::new(File::open(file_path)?);
     Ok(reader
         .lines()
-        .filter_map(Result::ok)
+        .map_while(Result::ok)
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty() && !s.starts_with('#') && !s.starts_with("//"))
         .collect())

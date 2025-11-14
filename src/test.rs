@@ -3,25 +3,35 @@ use std::fs::File;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::net::IpAddr;
-use shell_words;
 
 use crate::csv;
 use crate::CLOUDFLAREST_RUST;
 use crate::{error_println, info_println};
 
+type CidrData = HashMap<String, (Vec<f64>, Vec<f64>, HashSet<String>)>;
+type DatacenterStats = HashMap<String, (usize, Vec<f64>, Vec<f64>)>;
+type DatacenterCidrs = HashMap<String, HashSet<String>>;
+
+#[derive(Default)]
+pub struct ProcessConfig {
+    pub output_file: Option<String>,
+    pub output_txt: Option<String>,
+    pub limit_count: Option<usize>,
+    pub select_ipv4: Option<u128>,
+    pub select_ipv6: Option<u128>,
+    pub ipv4_prefix: Option<u8>,
+    pub ipv6_prefix: Option<u8>,
+}
+
 /// 流式处理 CloudflareST 测速结果文件
 pub fn process_cloudflare_results(
     temp_result_file: &str,
-    output_file: Option<&str>,
-    output_txt: Option<&str>,
-    limit_count: Option<usize>,
-    select_ipv4: Option<u128>,
-    select_ipv6: Option<u128>,
+    config: &ProcessConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 初始化数据结构
-    let mut cidr_data: HashMap<String, (Vec<f64>, Vec<f64>, HashSet<String>)> = HashMap::new();
-    let mut datacenter_stats: HashMap<String, (usize, Vec<f64>, Vec<f64>)> = HashMap::new();
-    let mut datacenter_cidrs: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut cidr_data: CidrData = HashMap::new();
+    let mut datacenter_stats: DatacenterStats = HashMap::new();
+    let mut datacenter_cidrs: DatacenterCidrs = HashMap::new();
 
     // 逐行读取结果 CSV
     let file = File::open(temp_result_file)?;
@@ -47,19 +57,21 @@ pub fn process_cloudflare_results(
         entry.1.push(latency);
         entry.2.push(loss_rate);
 
-        // 使用动态归类逻辑，将IP归类到/24或/48 CIDR
+        // 使用动态归类逻辑，将IP归类到自定义CIDR
         csv::insert_measurement(
             &mut cidr_data,
             &ip.to_string(),
             latency,
             loss_rate,
             &datacenter,
+            config.ipv4_prefix,
+            config.ipv6_prefix,
         );
         
         // 更新数据中心 CIDR 集合（使用动态归类的CIDR）
-        if let Some(bucket) = csv::normalize_ip_to_bucket(&ip.to_string()) {
+        if let Some(bucket) = csv::normalize_ip_to_bucket(&ip.to_string(), config.ipv4_prefix, config.ipv6_prefix) {
             datacenter_cidrs.entry(datacenter.clone())
-                .or_insert_with(HashSet::new)
+                .or_default()
                 .insert(bucket);
         }
     }
@@ -74,11 +86,7 @@ pub fn process_cloudflare_results(
     // 生成 CSV/TXT 输出
     generate_outputs(
         &cidr_data,
-        output_file,
-        output_txt,
-        limit_count,
-        select_ipv4,
-        select_ipv6,
+        config,
     )?;
 
     // 打印数据中心统计表
@@ -89,26 +97,22 @@ pub fn process_cloudflare_results(
 
 /// 使用前缀树和统一输出逻辑生成 CSV/TXT 文件
 fn generate_outputs(
-    cidr_data: &HashMap<String, (Vec<f64>, Vec<f64>, std::collections::HashSet<String>)>,
-    output_file: Option<&str>,
-    output_txt: Option<&str>,
-    limit_count: Option<usize>,
-    select_ipv4: Option<u128>,
-    select_ipv6: Option<u128>,
+    cidr_data: &CidrData,
+    config: &ProcessConfig,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     // 先排序
-    let sorted_cidrs = if output_file.is_some() || output_txt.is_some() {
-        csv::process_cidr_data(cidr_data, limit_count)
+    let sorted_cidrs = if config.output_file.is_some() || config.output_txt.is_some() {
+        csv::process_cidr_data(cidr_data, config.limit_count)
     } else { Vec::new() };
 
     // 生成 CSV
-    if let Some(csv_path) = output_file {
-        csv::generate_summary_csv(cidr_data, csv_path, limit_count)?;
+    if let Some(csv_path) = &config.output_file {
+        csv::generate_summary_csv(cidr_data, csv_path, config.limit_count)?;
     }
 
     // 生成 TXT
-    if let Some(txt_path) = output_txt {
-        let (data_ref, sorted_ref) = if output_file.is_some() {
+    if let Some(txt_path) = &config.output_txt {
+        let (data_ref, sorted_ref) = if config.output_file.is_some() {
             (None, Some(&sorted_cidrs[..]))
         } else {
             (Some(cidr_data), None)
@@ -117,16 +121,17 @@ fn generate_outputs(
             data_ref,
             sorted_ref,
             txt_path,
-            limit_count,
-            select_ipv4,
-            select_ipv6,
+            config.limit_count,
+            config.select_ipv4,
+            config.select_ipv6,
         )?;
     }
 
     // 输出合并的消息
-    let files: Vec<&str> = [output_file, output_txt]
+    let files: Vec<&str> = [&config.output_file, &config.output_txt]
         .into_iter()
         .flatten()
+        .map(|s| s.as_str())
         .collect();
 
     if !files.is_empty() {
@@ -140,11 +145,7 @@ fn generate_outputs(
 pub fn execute_cloudflare_st(
     cloudflare_args: &str,
     cidr_file: &str,
-    output_file: Option<&str>,
-    output_txt: Option<&str>,
-    limit_count: Option<usize>,
-    select_ipv4: Option<u128>,
-    select_ipv6: Option<u128>,
+    config: &ProcessConfig,
 ) -> Result<String, Box<dyn std::error::Error>> {
     info_println(format_args!("执行 {}", CLOUDFLAREST_RUST));
 
@@ -157,10 +158,9 @@ pub fn execute_cloudflare_st(
     // 删除旧的 result_*.csv 文件
     for entry in fs::read_dir(".")?.flatten() {
         let path = entry.path();
-        if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
-            if fname.starts_with("result_") && fname.ends_with(".csv") {
-                let _ = fs::remove_file(path);
-            }
+        if let Some(fname) = path.file_name().and_then(|n| n.to_str())
+            && fname.starts_with("result_") && fname.ends_with(".csv") {
+            let _ = fs::remove_file(path);
         }
     }
 
@@ -173,11 +173,7 @@ pub fn execute_cloudflare_st(
         Ok(status) if status.success() => {
             process_cloudflare_results(
                 &temp_result_file,
-                output_file,
-                output_txt,
-                limit_count,
-                select_ipv4,
-                select_ipv6,
+                config,
             )?;
         },
         Ok(status) => error_println(format_args!("{}执行失败，退出码: {:?}", CLOUDFLAREST_RUST, status.code())),

@@ -1,69 +1,114 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use prettytable::{Table, format, row};
 use std::io::{BufWriter, Write};
 use std::fs::File;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use ipnet::{Ipv4Net, Ipv6Net};
 
-/// 根据 IP 自动归类为标准 CIDR（IPv4→/24，IPv6→/48）
-pub fn normalize_ip_to_bucket(ip_str: &str) -> Option<String> {
-    if let Ok(ipv4) = ip_str.parse::<Ipv4Addr>() {
-        let base = u32::from(ipv4) & 0xFFFFFF00;
-        return Some(format!("{}/24", Ipv4Addr::from(base)));
-    }
-    if let Ok(ipv6) = ip_str.parse::<Ipv6Addr>() {
-        let base = u128::from(ipv6) & (!0u128 << (128 - 48));
-        return Some(format!("{}/48", Ipv6Addr::from(base)));
+type CidrData = HashMap<String, (Vec<f64>, Vec<f64>, HashSet<String>)>;
+
+/// 根据 IP 自动归类为自定义 CIDR（默认 IPv4→/24，IPv6→/48）
+pub fn normalize_ip_to_bucket(ip_str: &str, ipv4_prefix: Option<u8>, ipv6_prefix: Option<u8>) -> Option<String> {
+    let ipv4_prefix = ipv4_prefix?;
+    let ipv6_prefix = ipv6_prefix?;
+    
+    // IP 地址归类到 CIDR 桶
+    if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() {
+        match ip {
+            std::net::IpAddr::V4(ipv4) => {
+                // 使用 ipnet 库创建 IPv4 网络
+                let network = Ipv4Net::new(ipv4, ipv4_prefix).ok()?;
+                return Some(network.to_string());
+            }
+            std::net::IpAddr::V6(ipv6) => {
+                // 使用 ipnet 库创建 IPv6 网络
+                let network = Ipv6Net::new(ipv6, ipv6_prefix).ok()?;
+                return Some(network.to_string());
+            }
+        }
     }
     None
 }
 
 /// 将 HashSet<String> 转换为管道分隔字符串
 fn datacenters_to_string(datacenters: &HashSet<String>) -> String {
-    let mut centers: Vec<_> = datacenters.iter().cloned().collect();
-    centers.sort();
+    let mut centers: Vec<&str> = datacenters.iter().map(String::as_str).collect();
+    centers.sort_unstable(); 
     centers.join("|")
 }
 
 /// 打印数据中心统计表
 pub fn print_datacenter_stats_table(stats: &HashMap<String, (usize, Vec<f64>, Vec<f64>)>) {
-    let mut table = Table::new();
-    table.set_format(*format::consts::FORMAT_CLEAN);
-    table.set_titles(row!["数据中心", "CIDR 数量", "平均延迟", "最小延迟", "最大延迟", "平均丢包"]);
+    const COLUMN_PADDING: usize = 3; // 每列额外间距
+    const LEADING_SPACES: usize = 1; // 前导空格数量
+    const TABLE_HEADERS: [&str; 6] = ["数据中心", "CIDR 数量", "平均延迟", "最小延迟", "最大延迟", "平均丢包"];
 
-    for (dc, (count, lat, loss)) in stats {
-        if !lat.is_empty() {
-            table.add_row(row![
-                dc,
-                count,
-                format!("{:.2}", average(lat)),
-                format!("{:.2}", min_value(lat)),
-                format!("{:.2}", max_value(lat)),
-                format!("{:.2}", average(loss) / 100.0)
-            ]);
-        }
+    // 初始列宽来自表头
+    let header_display_widths = [8, 9, 8, 8, 8, 8];
+    let mut column_widths = header_display_widths.to_vec();
+
+    // 预计算每行数据并动态更新列宽
+    let rows: Vec<Vec<String>> = stats
+        .iter()
+        .filter(|(_, (_, lat, _))| !lat.is_empty())
+        .map(|(dc, (count, lat, loss))| {
+            let lat_len = lat.len() as f64;
+            let row = vec![
+                dc.clone(),
+                count.to_string(),
+                format!("{:.2}", lat.iter().sum::<f64>() / lat_len),
+                format!("{:.2}", lat.iter().fold(f64::INFINITY, |a, &b| a.min(b))),
+                format!("{:.2}", lat.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b))),
+                format!("{:.2}", loss.iter().sum::<f64>() / lat_len / 100.0),
+            ];
+
+            for (i, field) in row.iter().enumerate() {
+                column_widths[i] = column_widths[i].max(field.chars().count());
+            }
+
+            row
+        })
+        .collect();
+
+    // 分割线宽度
+    let base_width: usize = {
+        let sum_content_widths: usize = column_widths.iter().sum();
+        let sum_padding: usize = COLUMN_PADDING * (column_widths.len().saturating_sub(1));
+        sum_content_widths + sum_padding + LEADING_SPACES
+    };
+
+    let leading = " ".to_string();
+    let line = "─".repeat(base_width.saturating_sub(LEADING_SPACES));
+
+    // 输出分割线
+    println!("{leading}{line}");
+
+    // 输出表头
+    print!("{leading}");
+    for (i, header) in TABLE_HEADERS.iter().enumerate() {
+        let pad =
+            column_widths[i].saturating_sub(header_display_widths[i]) + COLUMN_PADDING;
+        print!("\x1b[1;97;100m{}\x1b[0m{}", header, " ".repeat(pad));
     }
-    table.printstd();
-}
+    println!();
 
-/// 计算平均值
-pub fn average(data: &[f64]) -> f64 {
-    data.iter().sum::<f64>() / data.len() as f64
-}
+    // 输出数据行
+    for row in &rows {
+        print!("{leading}");
+        for (i, field) in row.iter().enumerate() {
+            let pad =
+                column_widths[i].saturating_sub(field.chars().count()) + COLUMN_PADDING;
+            print!("{}{}", field, " ".repeat(pad));
+        }
+        println!();
+    }
 
-/// 计算最小值
-pub fn min_value(data: &[f64]) -> f64 {
-    data.iter().fold(f64::INFINITY, |a, &b| a.min(b))
-}
-
-/// 计算最大值
-pub fn max_value(data: &[f64]) -> f64 {
-    data.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b))
+    // 尾部分割线
+    println!("{leading}{line}");
 }
 
 /// 根据延迟和丢包计算 CIDR 得分并排序
 pub fn process_cidr_data(
-    cidr_data: &HashMap<String, (Vec<f64>, Vec<f64>, HashSet<String>)>,
+    cidr_data: &CidrData,
     limit: Option<usize>,
 ) -> Vec<String> {
     let mut stats: Vec<(&String, f64, f64, &HashSet<String>)> = Vec::with_capacity(cidr_data.len());
@@ -71,8 +116,10 @@ pub fn process_cidr_data(
     let mut sum_loss = 0.0;
 
     for (cidr, (lat, loss, dc)) in cidr_data {
-        let avg_lat = average(lat);
-        let avg_loss = average(loss);
+        let len = lat.len() as f64;
+        let avg_lat = lat.iter().sum::<f64>() / len;
+        let avg_loss = loss.iter().sum::<f64>() / len;
+
         sum_lat += avg_lat;
         sum_loss += avg_loss;
         stats.push((cidr, avg_lat, avg_loss, dc));
@@ -101,7 +148,7 @@ pub fn process_cidr_data(
 
 /// 生成统计结果 CSV 文件
 pub fn generate_summary_csv(
-    cidr_data: &HashMap<String, (Vec<f64>, Vec<f64>, HashSet<String>)>,
+    cidr_data: &CidrData,
     output_file: &str,
     limit: Option<usize>,
 ) -> Result<Vec<String>, std::io::Error> {
@@ -114,14 +161,20 @@ pub fn generate_summary_csv(
 
     for cidr in &sorted {
         if let Some((lat, loss, dc)) = cidr_data.get(cidr) {
+            let len = lat.len() as f64;
+            let avg_lat = lat.iter().sum::<f64>() / len;
+            let min_lat = lat.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+            let max_lat = lat.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+            let avg_loss = loss.iter().sum::<f64>() / len;
+
             writeln!(
                 writer, "{},{},{:.2},{:.2},{:.2},{:.2}", 
                 cidr, 
                 datacenters_to_string(dc), 
-                average(lat),
-                min_value(lat),
-                max_value(lat),
-                average(loss)
+                avg_lat,
+                min_lat,
+                max_lat,
+                avg_loss
             )?;
         }
     }
@@ -138,8 +191,16 @@ fn distribute_ips(cidrs: &[String], total: u128) -> Vec<(String, u128)> {
 
     let n = cidrs.len();
     let capacities: Vec<u128> = cidrs.iter().map(|c| {
-        if !c.contains('.') { u128::from(u32::MAX) } else { 256 }
+        // 解析CIDR并计算容量
+        parse_cidr_prefix(c)
+            .map(|(p, ipv6)| {
+                let bits: u32 = if ipv6 { 128 } else { 32 };
+                let shift = bits.saturating_sub(p as u32);
+                1u128.checked_shl(shift).unwrap_or(u128::MAX)
+            })
+            .unwrap_or_default()
     }).collect();
+    
     let total_capacity: u128 = capacities.iter().sum();
     let total = total.min(total_capacity);
 
@@ -152,9 +213,16 @@ fn distribute_ips(cidrs: &[String], total: u128) -> Vec<(String, u128)> {
     }).collect()
 }
 
+/// 解析CIDR字符串，返回前缀长度和是否为IPv6
+fn parse_cidr_prefix(cidr: &str) -> Option<(u8, bool)> {
+    let (ip, prefix) = cidr.split_once('/')?;
+    let p = prefix.parse::<u8>().ok()?;
+    Some((p, ip.contains(':')))
+}
+
 /// 生成 TXT 文件
 pub fn generate_txt_file(
-    cidr_data: Option<&HashMap<String, (Vec<f64>, Vec<f64>, HashSet<String>)>>,
+    cidr_data: Option<&CidrData>,
     sorted_cidrs: Option<&[String]>,
     output: &str,
     limit: Option<usize>,
@@ -194,15 +262,17 @@ pub fn generate_txt_file(
     Ok(())
 }
 
-/// 在数据收集阶段调用此函数，将每个 IP 动态归类为 /24 或 /48 的 CIDR
+/// 在数据收集阶段调用此函数，将每个 IP 动态归类为自定义 CIDR
 pub fn insert_measurement(
-    cidr_data: &mut HashMap<String, (Vec<f64>, Vec<f64>, HashSet<String>)>,
+    cidr_data: &mut CidrData,
     ip: &str,
     latency: f64,
     loss: f64,
     datacenter: &str,
+    ipv4_prefix: Option<u8>,
+    ipv6_prefix: Option<u8>,
 ) {
-    if let Some(bucket) = normalize_ip_to_bucket(ip) {
+    if let Some(bucket) = normalize_ip_to_bucket(ip, ipv4_prefix, ipv6_prefix) {
         let entry = cidr_data.entry(bucket).or_insert((Vec::new(), Vec::new(), HashSet::new()));
         entry.0.push(latency);
         entry.1.push(loss);
