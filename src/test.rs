@@ -49,10 +49,10 @@ pub fn process_cloudflare_results(
         };
         let loss_rate = parts[3].trim().parse::<f64>().unwrap_or(f64::NAN);
         let latency = parts[4].trim().parse::<f64>().unwrap_or(f64::NAN);
-        let datacenter = parts[6].trim().to_string();
+        let datacenter = parts[6].trim();
 
         // 更新数据中心统计
-        let entry = datacenter_stats.entry(datacenter.clone())
+        let entry = datacenter_stats.entry(datacenter.to_string())
             .or_insert((0, Vec::with_capacity(10), Vec::with_capacity(10)));
         entry.1.push(latency);
         entry.2.push(loss_rate);
@@ -63,14 +63,14 @@ pub fn process_cloudflare_results(
             &ip.to_string(),
             latency,
             loss_rate,
-            &datacenter,
+            datacenter,
             Some(config.ipv4_prefix),
             Some(config.ipv6_prefix),
         );
         
         // 更新数据中心 CIDR 集合（使用动态归类的CIDR）
         if let Some(bucket) = csv::normalize_ip_to_bucket(&ip.to_string(), Some(config.ipv4_prefix), Some(config.ipv6_prefix)) {
-            datacenter_cidrs.entry(datacenter.clone())
+            datacenter_cidrs.entry(datacenter.to_string())
                 .or_default()
                 .insert(bucket);
         }

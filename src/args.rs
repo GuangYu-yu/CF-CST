@@ -94,7 +94,7 @@ impl Args {
                 // 统一使用 peek 判断是否有下一个值
                 let value = if let Some(next) = iter.peek() {
                     if key == "ca" || !next.starts_with('-') {
-                        Some(iter.next().unwrap().to_string())
+                        Some(iter.next().unwrap().to_owned())
                     } else {
                         None
                     }
@@ -120,7 +120,7 @@ impl Args {
             }
         }
 
-        input.to_string()
+        input.to_owned()
     }
 }
 
@@ -134,16 +134,16 @@ pub fn parse_args() -> Args {
     }
 
     if !std::path::Path::new(&args.file_name).exists() {
-        errors.push(format!("指定的测速程序 {} 不存在", args.file_name));
+        errors.push(format!("指定的测速程序 {} 不存在", &args.file_name));
     }
 
     if let Some(cidr_file) = &args.cidr_file
         && !cidr_file.is_empty() && !std::path::Path::new(cidr_file).exists() {
-        errors.push("指定的文件不存在".to_string());
+        errors.push("指定的文件不存在".to_owned());
     }
 
     if args.cidr.is_none() && args.cidr_file.is_none() && args.cidr_url.is_none() {
-        errors.push("必须指定一个或多个 CIDR 来源参数 (-cidr, -cf 或 -cu)".to_string());
+        errors.push("必须指定一个或多个 CIDR 来源参数 (-cidr, -cf 或 -cu)".to_owned());
     }
 
     if !errors.is_empty() {

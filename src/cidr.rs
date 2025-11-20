@@ -115,7 +115,7 @@ pub fn collect_cidr_sources(cidr_text: &str, cidr_url: &str, cidr_file: &str, ip
     let mut sources = Vec::new();
 
     // 文本输入
-    sources.extend(cidr_text.split(',').map(str::trim).filter(|s| !s.is_empty()).map(ToString::to_string));
+    sources.extend(cidr_text.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from));
 
     // URL 来源
     if !cidr_url.is_empty()
@@ -130,7 +130,7 @@ pub fn collect_cidr_sources(cidr_text: &str, cidr_url: &str, cidr_file: &str, ip
     }
 
     let mut merged: Vec<String> = merge_cidr_list(&sources);
-    merged.sort();
+    merged.sort_unstable();
 
     let subnets: Vec<String> = merged.into_iter().flat_map(|cidr| parse_and_split_cidr(&cidr, ip_count, ipv4_prefix, ipv6_prefix)).collect();
 
@@ -190,7 +190,7 @@ fn get_cidr_from_url(url: &str) -> io::Result<Vec<String>> {
                     .lines()
                     .map(str::trim)
                     .filter(|s| !s.is_empty() && !s.starts_with('#') && !s.starts_with("//"))
-                    .map(ToString::to_string)
+                    .map(String::from)
                     .collect());
             }
             Ok(_) | Err(_) if attempt < 3 => {
@@ -209,7 +209,7 @@ fn get_cidr_from_file(file_path: &str) -> io::Result<Vec<String>> {
     Ok(reader
         .lines()
         .map_while(Result::ok)
-        .map(|s| s.trim().to_string())
+        .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty() && !s.starts_with('#') && !s.starts_with("//"))
         .collect())
 }

@@ -55,13 +55,21 @@ pub fn print_datacenter_stats_table(stats: &HashMap<String, (usize, Vec<f64>, Ve
         .filter(|(_, (_, lat, _))| !lat.is_empty())
         .map(|(dc, (count, lat, loss))| {
             let lat_len = lat.len() as f64;
+            let lat_sum = lat.iter().sum::<f64>();
+            let loss_sum = loss.iter().sum::<f64>();
+            
+            let avg_lat = lat_sum / lat_len;
+            let min_lat = lat.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+            let max_lat = lat.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+            let avg_loss = loss_sum / lat_len / 100.0;
+            
             let row = vec![
                 dc.clone(),
                 count.to_string(),
-                format!("{:.2}", lat.iter().sum::<f64>() / lat_len),
-                format!("{:.2}", lat.iter().fold(f64::INFINITY, |a, &b| a.min(b))),
-                format!("{:.2}", lat.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b))),
-                format!("{:.2}", loss.iter().sum::<f64>() / lat_len / 100.0),
+                format!("{:.2}", avg_lat),
+                format!("{:.2}", min_lat),
+                format!("{:.2}", max_lat),
+                format!("{:.2}", avg_loss),
             ];
 
             for (i, field) in row.iter().enumerate() {
@@ -187,7 +195,7 @@ pub fn generate_summary_csv(
 }
 
 /// 按 CIDR 分配 IP 数量（自动处理容量限制）
-fn distribute_ips(cidrs: &[String], total: u128) -> Vec<(String, u128)> {
+fn distribute_ips(cidrs: &[String], total: u128) -> Vec<(&String, u128)> {
     if cidrs.is_empty() || total == 0 {
         return vec![];
     }
@@ -212,7 +220,7 @@ fn distribute_ips(cidrs: &[String], total: u128) -> Vec<(String, u128)> {
 
     cidrs.iter().enumerate().map(|(i, c)| {
         let assigned = base + (i < extra as usize) as u128;
-        (c.clone(), assigned.min(capacities[i]))
+        (c, assigned.min(capacities[i]))
     }).collect()
 }
 
@@ -245,7 +253,10 @@ pub fn generate_txt_file(
         if let Some(t) = total {
             for (cidr, n) in distribute_ips(cidrs, t) {
                 if n > 0 {
-                    out.push_str(&format!("{}={}\n", cidr, n));
+                    out.push_str(cidr);
+                    out.push('=');
+                    out.push_str(&n.to_string());
+                    out.push('\n');
                 }
             }
         }
@@ -279,6 +290,6 @@ pub fn insert_measurement(
         let entry = cidr_data.entry(bucket).or_insert((Vec::new(), Vec::new(), HashSet::new()));
         entry.0.push(latency);
         entry.1.push(loss);
-        entry.2.insert(datacenter.to_string());
+        entry.2.insert(datacenter.to_owned());
     }
 }
