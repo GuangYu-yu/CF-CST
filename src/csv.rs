@@ -2,31 +2,34 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::fs::File;
-use ipnet::{Ipv4Net, Ipv6Net};
 
 type CidrData = HashMap<String, (Vec<f64>, Vec<f64>, HashSet<String>)>;
 
-/// 根据 IP 自动归类为自定义 CIDR（默认 IPv4→/24，IPv6→/48）
+/// 根据 IP 自动归类为自定义 CIDR
 pub fn normalize_ip_to_bucket(ip_str: &str, ipv4_prefix: Option<u8>, ipv6_prefix: Option<u8>) -> Option<String> {
-    let ipv4_prefix = ipv4_prefix?;
-    let ipv6_prefix = ipv6_prefix?;
     
-    // IP 地址归类到 CIDR 桶
-    if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() {
-        match ip {
-            std::net::IpAddr::V4(ipv4) => {
-                // 使用 ipnet 库创建 IPv4 网络
-                let network = Ipv4Net::new(ipv4, ipv4_prefix).ok()?;
-                return Some(network.to_string());
-            }
-            std::net::IpAddr::V6(ipv6) => {
-                // 使用 ipnet 库创建 IPv6 网络
-                let network = Ipv6Net::new(ipv6, ipv6_prefix).ok()?;
-                return Some(network.to_string());
-            }
-        }
-    }
-    None
+    // IP 地址归类到 CIDR 桶 
+    if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() { 
+        match ip { 
+            std::net::IpAddr::V4(ipv4) => { 
+                let prefix = ipv4_prefix?; 
+                if prefix == 0 || prefix > 32 { return None; } 
+                
+                let network = ipnet::Ipv4Net::new(ipv4, prefix).ok()?.trunc(); 
+                
+                return Some(network.to_string()); 
+            } 
+            std::net::IpAddr::V6(ipv6) => { 
+                let prefix = ipv6_prefix?; 
+                if prefix == 0 || prefix > 128 { return None; } 
+ 
+                let network = ipnet::Ipv6Net::new(ipv6, prefix).ok()?.trunc(); 
+                
+                return Some(network.to_string()); 
+            } 
+        } 
+    } 
+    None 
 }
 
 /// 将 HashSet<String> 转换为管道分隔字符串

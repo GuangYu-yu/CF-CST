@@ -47,8 +47,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.cidr_url.as_deref().unwrap(),
         args.cidr_file.as_deref().unwrap(),
         ip_count,
-        args.ipv4_prefix,
-        args.ipv6_prefix,
+        Some(args.ipv4_prefix),
+        Some(args.ipv6_prefix),
     ) {
         use test::{execute_cloudflare_st, ProcessConfig};
         

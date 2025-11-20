@@ -19,8 +19,8 @@ pub struct ProcessConfig {
     pub limit_count: Option<usize>,
     pub select_ipv4: Option<u128>,
     pub select_ipv6: Option<u128>,
-    pub ipv4_prefix: Option<u8>,
-    pub ipv6_prefix: Option<u8>,
+    pub ipv4_prefix: u8,
+    pub ipv6_prefix: u8,
 }
 
 /// 流式处理 CloudflareST 测速结果文件
@@ -64,12 +64,12 @@ pub fn process_cloudflare_results(
             latency,
             loss_rate,
             &datacenter,
-            config.ipv4_prefix,
-            config.ipv6_prefix,
+            Some(config.ipv4_prefix),
+            Some(config.ipv6_prefix),
         );
         
         // 更新数据中心 CIDR 集合（使用动态归类的CIDR）
-        if let Some(bucket) = csv::normalize_ip_to_bucket(&ip.to_string(), config.ipv4_prefix, config.ipv6_prefix) {
+        if let Some(bucket) = csv::normalize_ip_to_bucket(&ip.to_string(), Some(config.ipv4_prefix), Some(config.ipv6_prefix)) {
             datacenter_cidrs.entry(datacenter.clone())
                 .or_default()
                 .insert(bucket);
@@ -112,14 +112,9 @@ fn generate_outputs(
 
     // 生成 TXT
     if let Some(txt_path) = &config.output_txt {
-        let (data_ref, sorted_ref) = if config.output_file.is_some() {
-            (None, Some(&sorted_cidrs[..]))
-        } else {
-            (Some(cidr_data), None)
-        };
         csv::generate_txt_file(
-            data_ref,
-            sorted_ref,
+            Some(cidr_data),
+            None,
             txt_path,
             config.limit_count,
             config.select_ipv4,

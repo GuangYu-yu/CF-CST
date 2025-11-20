@@ -22,8 +22,8 @@ pub struct Args {
     pub output_txt: Option<String>,
     pub limit_count: Option<usize>,
     pub skip_cleanup: bool,
-    pub ipv4_prefix: Option<u8>,
-    pub ipv6_prefix: Option<u8>,
+    pub ipv4_prefix: u8,
+    pub ipv6_prefix: u8,
 }
 
 impl Args {
@@ -42,8 +42,8 @@ impl Args {
             output_txt: Some("ip.txt".to_string()),
             limit_count: None,
             skip_cleanup: false,
-            ipv4_prefix: Some(24),
-            ipv6_prefix: Some(48),
+            ipv4_prefix: 24,
+            ipv6_prefix: 48,
         }
     }
 
@@ -72,8 +72,8 @@ impl Args {
                 "ot" => parsed.output_txt = v_opt,
                 "lc" => parsed.limit_count = v_opt.and_then(|v| v.parse().ok()),
                 "sc" => parsed.skip_cleanup = true,
-                "v4p" => parsed.ipv4_prefix = v_opt.and_then(|v| v.parse::<u8>().ok()),
-                "v6p" => parsed.ipv6_prefix = v_opt.and_then(|v| v.parse::<u8>().ok()),
+                "v4p" => parsed.ipv4_prefix = v_opt.and_then(|v| v.parse::<u8>().ok()).unwrap_or(parsed.ipv4_prefix),
+                "v6p" => parsed.ipv6_prefix = v_opt.and_then(|v| v.parse::<u8>().ok()).unwrap_or(parsed.ipv6_prefix),
                 _ => {
                     print_help();
                     error_and_exit(format_args!("无效的参数: {}", k));

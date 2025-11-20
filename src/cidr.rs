@@ -22,8 +22,8 @@ pub fn parse_and_split_cidr(cidr_str: &str, ip_count: u32, ipv4_prefix: Option<u
 
 /// 自动规范化输入为 CIDR 格式
 fn normalize_to_cidr(input: &str, ipv4_prefix: Option<u8>, ipv6_prefix: Option<u8>) -> Option<IpNet> {
-    let ipv4_prefix = ipv4_prefix.unwrap();
-    let ipv6_prefix = ipv6_prefix.unwrap();
+    let ipv4_prefix = ipv4_prefix?;
+    let ipv6_prefix = ipv6_prefix?;
     
     // IPv4 单 IP
     if let Ok(ipv4) = input.parse::<Ipv4Addr>() {
