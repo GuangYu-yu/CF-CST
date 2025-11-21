@@ -111,48 +111,54 @@ pub fn write_to_temp_file(subnets: &[String]) -> io::Result<String> {
 }
 
 /// 收集多来源 CIDR
-pub fn collect_cidr_sources(cidr_text: &str, cidr_url: &str, cidr_file: &str, ip_count: u32, ipv4_prefix: Option<u8>, ipv6_prefix: Option<u8>) -> Option<String> {
-    let mut sources = Vec::new();
+pub fn collect_cidr_sources(
+    cidr_text: &str,
+    cidr_url: &str,
+    cidr_file: &str,
+    ip_count: u32,
+    ipv4_prefix: Option<u8>,
+    ipv6_prefix: Option<u8>,
+) -> Option<String> {
+    let sources = {
+        let mut src = Vec::new();
+        src.extend(cidr_text.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from));
+        if !cidr_url.is_empty()
+            && let Ok(url_list) = get_cidr_from_url(cidr_url) { src.extend(url_list); }
+        if !cidr_file.is_empty() && Path::new(cidr_file).exists()
+            && let Ok(file_list) = get_cidr_from_file(cidr_file) { src.extend(file_list); }
+        src
+    };
 
-    // 文本输入
-    sources.extend(cidr_text.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from));
-
-    // URL 来源
-    if !cidr_url.is_empty()
-        && let Ok(url_list) = get_cidr_from_url(cidr_url) {
-        sources.extend(url_list);
-    }
-
-    // 文件来源
-    if !cidr_file.is_empty() && Path::new(cidr_file).exists()
-        && let Ok(file_list) = get_cidr_from_file(cidr_file) {
-        sources.extend(file_list);
-    }
-
-    // 先将所有输入转换为标准CIDR格式，然后再合并
     let normalized_cidrs: Vec<String> = sources
-        .iter()
-        .filter_map(|source| normalize_to_cidr(source, ipv4_prefix, ipv6_prefix).map(|c| c.to_string()))
+        .into_iter()
+        .filter_map(|s| normalize_to_cidr(&s, ipv4_prefix, ipv6_prefix))
+        .map(|c| c.to_string())
         .collect();
 
-    // 合并CIDR
-    let mut merged: Vec<String> = merge_cidr_list(&normalized_cidrs);
-    merged.sort_unstable();
-
-    let subnets: Vec<String> = merged.into_iter().flat_map(|cidr| parse_and_split_cidr(&cidr, ip_count, ipv4_prefix, ipv6_prefix)).collect();
-
-    if subnets.is_empty() {
+    if normalized_cidrs.is_empty() {
         error_println(format_args!("未找到有效CIDR"));
         return None;
     }
 
-    match write_to_temp_file(&subnets) {
-        Ok(path) => Some(path),
-        Err(e) => {
+    let mut merged = merge_cidr_list(&normalized_cidrs);
+    merged.sort_unstable();
+
+    let subnets: Vec<String> = merged
+        .into_iter()
+        .flat_map(|cidr| parse_and_split_cidr(&cidr, ip_count, ipv4_prefix, ipv6_prefix))
+        .collect();
+
+    if subnets.is_empty() {
+        error_println(format_args!("未生成子网"));
+        return None;
+    }
+
+    write_to_temp_file(&subnets)
+        .map(Some)
+        .unwrap_or_else(|e| {
             error_println(format_args!("写入结果失败: {}", e));
             None
-        }
-    }
+        })
 }
 
 /// 合并 CIDR
