@@ -5,6 +5,19 @@ use std::fs::File;
 
 type CidrData = HashMap<String, (Vec<f64>, Vec<f64>, HashSet<String>)>;
 
+/// 计算延迟统计信息（平均、最小、最大）
+fn calculate_latency_stats(latencies: &[f64]) -> (f64, f64, f64) {
+    if latencies.is_empty() {
+        return (f64::NAN, f64::NAN, f64::NAN);
+    }
+    let len = latencies.len() as f64;
+    let sum = latencies.iter().sum::<f64>();
+    let avg = sum / len;
+    let min = latencies.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+    let max = latencies.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+    (avg, min, max)
+}
+
 /// 根据 IP 自动归类为自定义 CIDR
 pub fn normalize_ip_to_bucket(ip_str: &str, ipv4_prefix: Option<u8>, ipv6_prefix: Option<u8>) -> Option<String> {
     
@@ -54,17 +67,12 @@ pub fn print_datacenter_stats_table(stats: &HashMap<String, (usize, Vec<f64>, Ve
         .iter()
         .filter(|(_, (_, lat, _))| !lat.is_empty())
         .map(|(dc, (count, lat, loss))| {
-            let lat_len = lat.len() as f64;
-            let lat_sum = lat.iter().sum::<f64>();
+            let (avg_lat, min_lat, max_lat) = calculate_latency_stats(lat);
             let loss_sum = loss.iter().sum::<f64>();
-            
-            let avg_lat = lat_sum / lat_len;
-            let min_lat = lat.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-            let max_lat = lat.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-            let avg_loss = loss_sum / lat_len / 100.0;
+            let avg_loss = loss_sum / lat.len() as f64 / 100.0;
             
             let row = vec![
-                dc.clone(),
+                dc.to_owned(),
                 count.to_string(),
                 format!("{:.2}", avg_lat),
                 format!("{:.2}", min_lat),
@@ -172,10 +180,8 @@ pub fn generate_summary_csv(
 
     for cidr in &sorted {
         if let Some((lat, loss, dc)) = cidr_data.get(cidr) {
+            let (avg_lat, min_lat, max_lat) = calculate_latency_stats(lat);
             let len = lat.len() as f64;
-            let avg_lat = lat.iter().sum::<f64>() / len;
-            let min_lat = lat.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-            let max_lat = lat.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
             let avg_loss = loss.iter().sum::<f64>() / len;
 
             writeln!(

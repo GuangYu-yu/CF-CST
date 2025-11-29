@@ -121,7 +121,7 @@ pub fn collect_cidr_sources(
 ) -> Option<String> {
     let sources = {
         let mut src = Vec::new();
-        src.extend(cidr_text.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from));
+        src.extend(cidr_text.split(',').map(str::trim).filter(|s| !s.is_empty()).map(ToString::to_string));
         if !cidr_url.is_empty()
             && let Ok(url_list) = get_cidr_from_url(cidr_url) { src.extend(url_list); }
         if !cidr_file.is_empty() && Path::new(cidr_file).exists()

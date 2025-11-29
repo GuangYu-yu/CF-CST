@@ -2,7 +2,6 @@ use std::fs;
 use std::fs::File;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
-use std::net::IpAddr;
 
 use crate::csv;
 use crate::CLOUDFLAREST_RUST;
@@ -43,10 +42,11 @@ pub fn process_cloudflare_results(
         let parts: Vec<&str> = line.split(',').collect();
         if parts.len() < 7 { continue; }
 
-        let ip: IpAddr = match parts[0].trim().parse() {
-            Ok(ip) => ip,
-            Err(_) => continue,
-        };
+        let ip_str = parts[0].trim();
+        // 检查IP格式是否有效
+        if ip_str.parse::<std::net::IpAddr>().is_err() {
+            continue;
+        }
         let loss_rate = parts[3].trim().parse::<f64>().unwrap_or(f64::NAN);
         let latency = parts[4].trim().parse::<f64>().unwrap_or(f64::NAN);
         let datacenter = parts[6].trim();
@@ -58,18 +58,21 @@ pub fn process_cloudflare_results(
         entry.2.push(loss_rate);
 
         // 使用动态归类逻辑，将IP归类到自定义CIDR
-        csv::insert_measurement(
-            &mut cidr_data,
-            &ip.to_string(),
-            latency,
-            loss_rate,
-            datacenter,
-            Some(config.ipv4_prefix),
-            Some(config.ipv6_prefix),
-        );
+        let bucket = csv::normalize_ip_to_bucket(ip_str, Some(config.ipv4_prefix), Some(config.ipv6_prefix));
         
-        // 更新数据中心 CIDR 集合（使用动态归类的CIDR）
-        if let Some(bucket) = csv::normalize_ip_to_bucket(&ip.to_string(), Some(config.ipv4_prefix), Some(config.ipv6_prefix)) {
+        if let Some(bucket) = bucket {
+            // 插入测量数据
+            csv::insert_measurement(
+                &mut cidr_data,
+                ip_str,
+                latency,
+                loss_rate,
+                datacenter,
+                Some(config.ipv4_prefix),
+                Some(config.ipv6_prefix),
+            );
+            
+            // 更新数据中心 CIDR 集合
             datacenter_cidrs.entry(datacenter.to_string())
                 .or_default()
                 .insert(bucket);

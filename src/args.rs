@@ -29,7 +29,7 @@ pub struct Args {
 impl Args {
     pub fn new() -> Self {
         Self {
-            file_name: CLOUDFLAREST_RUST.to_string(),
+            file_name: CLOUDFLAREST_RUST.to_owned(),
             help: false,
             cidr: Some("".to_string()),
             cidr_file: Some("".to_string()),
@@ -38,8 +38,8 @@ impl Args {
             select_ipv6: None,
             ip_count: Some(2),
             cloudflare_args: Some("".to_string()),
-            output_file: Some("CIDR-Result.csv".to_string()),
-            output_txt: Some("ip.txt".to_string()),
+            output_file: Some("CIDR-Result.csv".to_owned()),
+            output_txt: Some("ip.txt".to_owned()),
             limit_count: None,
             skip_cleanup: false,
             ipv4_prefix: 24,
@@ -90,7 +90,7 @@ impl Args {
 
         while let Some(arg) = iter.next() {
             if arg.starts_with('-') {
-                let key = arg.trim_start_matches('-').to_string();
+                let key = arg.trim_start_matches('-').to_owned();
                 // 统一使用 peek 判断是否有下一个值
                 let value = if let Some(next) = iter.peek() {
                     if key == "ca" || !next.starts_with('-') {
@@ -139,11 +139,11 @@ pub fn parse_args() -> Args {
 
     if let Some(cidr_file) = &args.cidr_file
         && !cidr_file.is_empty() && !std::path::Path::new(cidr_file).exists() {
-        errors.push("指定的文件不存在".to_owned());
+        errors.push(String::from("指定的文件不存在"));
     }
 
     if args.cidr.is_none() && args.cidr_file.is_none() && args.cidr_url.is_none() {
-        errors.push("必须指定一个或多个 CIDR 来源参数 (-cidr, -cf 或 -cu)".to_owned());
+        errors.push(String::from("必须指定一个或多个 CIDR 来源参数 (-cidr, -cf 或 -cu)"));
     }
 
     if !errors.is_empty() {

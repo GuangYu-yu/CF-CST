@@ -30,9 +30,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = args::parse_args();
 
     // 检查是否提供 CIDR 来源
-    let has_cidr_source = args.cidr.as_deref().is_some_and(|s| !s.is_empty())
-        || args.cidr_url.as_deref().is_some_and(|s| !s.is_empty())
-        || args.cidr_file.as_deref().is_some_and(|s| !s.is_empty());
+    let has_cidr_source = args.cidr.as_ref().is_some_and(|s| !s.is_empty())
+        || args.cidr_url.as_ref().is_some_and(|s| !s.is_empty())
+        || args.cidr_file.as_ref().is_some_and(|s| !s.is_empty());
 
     if !has_cidr_source {
         info_println(format_args!("没有提供 CIDR 来源"));
