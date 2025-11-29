@@ -10,11 +10,13 @@ fn calculate_latency_stats(latencies: &[f64]) -> (f64, f64, f64) {
     if latencies.is_empty() {
         return (f64::NAN, f64::NAN, f64::NAN);
     }
-    let len = latencies.len() as f64;
-    let sum = latencies.iter().sum::<f64>();
-    let avg = sum / len;
-    let min = latencies.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-    let max = latencies.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+
+    let (sum, min, max) = latencies.iter().fold(
+        (0.0, f64::INFINITY, f64::NEG_INFINITY),
+        |(sum, min, max), &x| (sum + x, min.min(x), max.max(x)),
+    );
+
+    let avg = sum / latencies.len() as f64;
     (avg, min, max)
 }
 
