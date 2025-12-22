@@ -31,8 +31,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 检查是否提供 CIDR 来源
     let has_cidr_source = [args.cidr.as_deref(), args.cidr_url.as_deref(), args.cidr_file.as_deref()]
-        .into_iter()
-        .any(|s| matches!(s, Some(v) if !v.is_empty()));
+        .iter()
+        .any(|opt| opt.is_some_and(|s| !s.is_empty()));
 
     if !has_cidr_source {
         info_println(format_args!("没有提供 CIDR 来源"));
@@ -82,5 +82,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info_println(format_args!("CIDR 测速完毕"));
     Ok(())
-
 }

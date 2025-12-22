@@ -7,9 +7,8 @@ use crate::csv;
 use crate::CLOUDFLAREST_RUST;
 use crate::{error_println, info_println};
 
-type CidrData = HashMap<String, (Vec<f64>, Vec<f64>, HashSet<String>)>;
-type DatacenterStats = HashMap<String, (usize, Vec<f64>, Vec<f64>)>;
-type DatacenterCidrs = HashMap<String, HashSet<String>>;
+type CidrData = csv::CidrData;
+type DatacenterStats = csv::DatacenterStats;
 
 #[derive(Default)]
 pub struct ProcessConfig {
@@ -27,72 +26,57 @@ pub fn process_cloudflare_results(
     temp_result_file: &str,
     config: &ProcessConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 初始化数据结构
     let mut cidr_data: CidrData = HashMap::new();
     let mut datacenter_stats: DatacenterStats = HashMap::new();
-    let mut datacenter_cidrs: DatacenterCidrs = HashMap::new();
 
-    // 逐行读取结果 CSV
     let file = File::open(temp_result_file)?;
     let reader = BufReader::new(file);
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if i == 0 { continue; } // 跳过表头
 
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() < 7 { continue; }
-
-        let ip_str = parts[0].trim();
-        // 检查IP格式是否有效
-        if ip_str.parse::<std::net::IpAddr>().is_err() {
-            continue;
-        }
-        let loss_rate = parts[3].trim().parse::<f64>().unwrap_or(f64::NAN);
-        let latency = parts[4].trim().parse::<f64>().unwrap_or(f64::NAN);
-        let datacenter = parts[6].trim();
-
-        // 更新数据中心统计
-        let entry = datacenter_stats.entry(datacenter.to_string())
-            .or_insert((0, Vec::with_capacity(10), Vec::with_capacity(10)));
-        entry.1.push(latency);
-        entry.2.push(loss_rate);
-
-        // 使用动态归类逻辑，将IP归类到自定义CIDR
-        let bucket = csv::normalize_ip_to_bucket(ip_str, Some(config.ipv4_prefix), Some(config.ipv6_prefix));
+    for (i, line_result) in reader.lines().enumerate() {
+        if i == 0 { continue; }
         
-        if let Some(bucket) = bucket {
-            // 插入测量数据
+        let line = line_result?;
+        if line.is_empty() { continue; }
+
+        let mut parts = line.split(',');
+        
+        let ip_str = parts.next().map(|s| s.trim()).unwrap_or("");
+        if ip_str.is_empty() || ip_str.parse::<std::net::IpAddr>().is_err() { 
+            continue; 
+        }
+
+        let mut parts = parts.skip(2);
+        
+        let loss_rate = parts.next().and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(f64::NAN);
+        let latency = parts.next().and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(f64::NAN);
+        
+        let datacenter_str = parts.nth(1).map(|s| s.trim()).unwrap_or("");
+
+        if let Some(bucket) = csv::normalize_ip_to_bucket(
+            ip_str, 
+            Some(config.ipv4_prefix),
+            Some(config.ipv6_prefix)
+        ) {
             csv::insert_measurement(
                 &mut cidr_data,
                 ip_str,
                 latency,
                 loss_rate,
-                datacenter,
+                datacenter_str,
                 Some(config.ipv4_prefix),
                 Some(config.ipv6_prefix),
             );
             
-            // 更新数据中心 CIDR 集合
-            datacenter_cidrs.entry(datacenter.to_string())
-                .or_default()
-                .insert(bucket);
+            let stats = datacenter_stats.entry(datacenter_str.to_string())
+                .or_insert_with(|| (HashSet::new(), Vec::new(), Vec::new()));
+            
+            stats.0.insert(bucket);
+            if !latency.is_nan() { stats.1.push(latency); }
+            if !loss_rate.is_nan() { stats.2.push(loss_rate); }
         }
     }
 
-    // 更新数据中心 CIDR 数量
-    for (dc, cidr_set) in &datacenter_cidrs {
-        if let Some(entry) = datacenter_stats.get_mut(dc) {
-            entry.0 = cidr_set.len();
-        }
-    }
-
-    // 生成 CSV/TXT 输出
-    generate_outputs(
-        &cidr_data,
-        config,
-    )?;
-
-    // 打印数据中心统计表
+    generate_outputs(&cidr_data, config)?;
     csv::print_datacenter_stats_table(&datacenter_stats);
 
     Ok(())

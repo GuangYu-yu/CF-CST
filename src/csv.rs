@@ -1,9 +1,12 @@
 use std::collections::{HashMap, HashSet};
+use std::collections::HashSet as StdHashSet;
 use std::fs;
 use std::io::{BufWriter, Write};
 use std::fs::File;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
-type CidrData = HashMap<String, (Vec<f64>, Vec<f64>, HashSet<String>)>;
+pub type CidrData = HashMap<String, (Vec<f64>, Vec<f64>, HashSet<String>)>;
+pub type DatacenterStats = HashMap<String, (StdHashSet<String>, Vec<f64>, Vec<f64>)>;
 
 /// 计算延迟统计信息（平均、最小、最大）
 fn calculate_latency_stats(latencies: &[f64]) -> (f64, f64, f64) {
@@ -30,17 +33,35 @@ pub fn normalize_ip_to_bucket(ip_str: &str, ipv4_prefix: Option<u8>, ipv6_prefix
                 let prefix = ipv4_prefix?; 
                 if prefix == 0 || prefix > 32 { return None; } 
                 
-                let network = ipnet::Ipv4Net::new(ipv4, prefix).ok()?.trunc(); 
+                // 手动计算网络地址
+                let ip_u32: u32 = ipv4.into();
+                let mask = if prefix == 0 {
+                    0
+                } else if prefix >= 32 {
+                    u32::MAX
+                } else {
+                    !((1 << (32 - prefix)) - 1)
+                };
+                let network_ip = Ipv4Addr::from(ip_u32 & mask);
                 
-                return Some(network.to_string()); 
+                return Some(format!("{}/{}", network_ip, prefix)); 
             } 
             std::net::IpAddr::V6(ipv6) => { 
                 let prefix = ipv6_prefix?; 
                 if prefix == 0 || prefix > 128 { return None; } 
  
-                let network = ipnet::Ipv6Net::new(ipv6, prefix).ok()?.trunc(); 
+                // 手动计算网络地址
+                let ip_u128: u128 = ipv6.into();
+                let mask = if prefix == 0 {
+                    0
+                } else if prefix >= 128 {
+                    u128::MAX
+                } else {
+                    !((1 << (128 - prefix)) - 1)
+                };
+                let network_ip = Ipv6Addr::from(ip_u128 & mask);
                 
-                return Some(network.to_string()); 
+                return Some(format!("{}/{}", network_ip, prefix)); 
             } 
         } 
     } 
@@ -55,7 +76,7 @@ fn datacenters_to_string(datacenters: &HashSet<String>) -> String {
 }
 
 /// 打印数据中心统计表
-pub fn print_datacenter_stats_table(stats: &HashMap<String, (usize, Vec<f64>, Vec<f64>)>) {
+pub fn print_datacenter_stats_table(stats: &DatacenterStats) {
     const COLUMN_PADDING: usize = 3; // 每列额外间距
     const LEADING_SPACES: usize = 1; // 前导空格数量
     const TABLE_HEADERS: [&str; 6] = ["数据中心", "CIDR 数量", "平均延迟", "最小延迟", "最大延迟", "平均丢包"];
@@ -68,7 +89,8 @@ pub fn print_datacenter_stats_table(stats: &HashMap<String, (usize, Vec<f64>, Ve
     let rows: Vec<Vec<String>> = stats
         .iter()
         .filter(|(_, (_, lat, _))| !lat.is_empty())
-        .map(|(dc, (count, lat, loss))| {
+        .map(|(dc, (cidr_set, lat, loss))| {
+            let count = cidr_set.len();
             let (avg_lat, min_lat, max_lat) = calculate_latency_stats(lat);
             let loss_sum = loss.iter().sum::<f64>();
             let avg_loss = loss_sum / lat.len() as f64 / 100.0;
@@ -133,28 +155,27 @@ pub fn process_cidr_data(
     limit: Option<usize>,
 ) -> Vec<String> {
     let mut stats: Vec<(&String, f64, f64, &HashSet<String>)> = Vec::with_capacity(cidr_data.len());
-    let mut sum_lat = 0.0;
-    let mut sum_loss = 0.0;
+    let mut total_lat = 0.0;
+    let mut total_loss = 0.0;
 
     for (cidr, (lat, loss, dc)) in cidr_data {
         let len = lat.len() as f64;
         let avg_lat = lat.iter().sum::<f64>() / len;
         let avg_loss = loss.iter().sum::<f64>() / len;
-
-        sum_lat += avg_lat;
-        sum_loss += avg_loss;
+        total_lat += avg_lat;
+        total_loss += avg_loss;
         stats.push((cidr, avg_lat, avg_loss, dc));
     }
 
     let total = stats.len() as f64;
-    let avg_lat = sum_lat / total;
-    let avg_loss = sum_loss / total;
+    let avg_lat = total_lat / total;
+    let avg_loss = total_loss / total;
 
     let mut scored: Vec<(&String, f64)> = stats
-        .iter()
+        .into_iter()
         .map(|(cidr, lat, loss, _)| {
-            let s = (avg_lat - *lat) * 0.4 + (avg_loss - *loss) * 0.6;
-            (*cidr, s)
+            let s = (avg_lat - lat) * 0.4 + (avg_loss - loss) * 0.6;
+            (cidr, s)
         })
         .collect();
 
@@ -183,8 +204,7 @@ pub fn generate_summary_csv(
     for cidr in &sorted {
         if let Some((lat, loss, dc)) = cidr_data.get(cidr) {
             let (avg_lat, min_lat, max_lat) = calculate_latency_stats(lat);
-            let len = lat.len() as f64;
-            let avg_loss = loss.iter().sum::<f64>() / len;
+            let avg_loss = loss.iter().sum::<f64>() / lat.len() as f64;
 
             writeln!(
                 writer, "{},{},{:.2},{:.2},{:.2},{:.2}", 
@@ -227,7 +247,7 @@ fn distribute_ips(cidrs: &[String], total: u128) -> Vec<(&String, u128)> {
     let extra = total % n as u128;
 
     cidrs.iter().enumerate().map(|(i, c)| {
-        let assigned = base + (i < extra as usize) as u128;
+        let assigned = base + (if i < extra as usize { 1 } else { 0 });
         (c, assigned.min(capacities[i]))
     }).collect()
 }
@@ -295,9 +315,9 @@ pub fn insert_measurement(
     ipv6_prefix: Option<u8>,
 ) {
     if let Some(bucket) = normalize_ip_to_bucket(ip, ipv4_prefix, ipv6_prefix) {
-        let entry = cidr_data.entry(bucket).or_insert((Vec::new(), Vec::new(), HashSet::new()));
-        entry.0.push(latency);
-        entry.1.push(loss);
-        entry.2.insert(datacenter.to_owned());
+        let (lat_vec, loss_vec, dc_set) = cidr_data.entry(bucket).or_insert((Vec::new(), Vec::new(), HashSet::new()));
+        lat_vec.push(latency);
+        loss_vec.push(loss);
+        dc_set.insert(datacenter.to_owned());
     }
 }

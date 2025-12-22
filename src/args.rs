@@ -4,7 +4,7 @@ use crate::CLOUDFLAREST_RUST;
 use crate::error_println;
 
 const ALLOWED_CLOUDFLARE_ARGS: &[&str] = &[
-    "t", "tp", "colo", "tl", "tll", "tlr", "n", "timeout", "intf", "hu"
+    "t", "colo", "tl", "tll", "tlr", "n", "timeout", "intf"
 ];
 
 #[derive(Clone)]
