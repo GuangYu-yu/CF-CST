@@ -224,8 +224,8 @@ pub fn print_help() {
     print_arg_row("-ot", "指定输出 TXT 文件名", "ip.txt");
     print_arg_row("-lc", "限制写入文件的条目数量", "无限制");
     print_arg_row("-sc", "跳过删除临时文件", "false");
-    print_arg_row("v4p", "IPv4 CIDR 前缀长度", "24");
-    print_arg_row("v6p", "IPv6 CIDR 前缀长度", "48");
+    print_arg_row("-v4p", "IPv4 CIDR 前缀长度", "24");
+    print_arg_row("-v6p", "IPv6 CIDR 前缀长度", "48");
 }
 
 // 打印错误信息并退出程序
