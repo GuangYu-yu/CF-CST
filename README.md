@@ -2,7 +2,7 @@
 
 # Cloudflare-CIDR-Speedtest
 
-**这是一个通过调用 CloudflareST-Rust 来测速 CloudFlare CIDR 的工具。**
+Cloudflare CIDR 延迟测速 + 数据统计
 
 <p align="center">
   <img src="https://img.shields.io/badge/rustc-latest-orange?style=flat-square&logo=rust" alt="Rust Version">
